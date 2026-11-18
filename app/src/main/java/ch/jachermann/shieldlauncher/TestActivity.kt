@@ -43,6 +43,11 @@ class TestActivity : Activity() {
     private var selServerId: String? = null
     private var selRatingKey: String? = null
     private var selTitle: String? = null
+    private var selType: String? = null
+
+    private data class Item(val serverId: String, val ratingKey: String, val title: String, val type: String)
+    private val items = mutableListOf<Item>()
+    private var itemIndex = 0
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -85,6 +90,9 @@ class TestActivity : Activity() {
 
         addButton("1. Mit Plex anmelden") { login() }
         addButton("2. Weiterschauen laden") { loadOnDeck() }
+        addButton("Nächsten Titel auswählen") { nextItem() }
+        addButton("Test F: direkt abspielen (neu)") { testF() }
+        addButton("Test G: Detailseite öffnen (neu)") { testG() }
         addButton("Test A: plex://server Link") { testA() }
         addButton("Test B: app.plex.tv Link") { testB() }
         addButton("Test C: plex://play") { testC() }
@@ -206,6 +214,8 @@ class TestActivity : Activity() {
             return@bg
         }
         log("--- Server suchen ---")
+        items.clear()
+        itemIndex = 0
         val (code, body) = http("GET", "https://plex.tv/api/v2/resources?includeHttps=1&includeRelay=1", plexHeaders(token))
         if (code !in 200..299) {
             log("Server-Liste fehlgeschlagen: HTTP $code")
@@ -259,11 +269,13 @@ class TestActivity : Activity() {
                 val title = if (m.optString("type") == "episode") {
                     "${m.optString("grandparentTitle")} – ${m.optString("title")}"
                 } else m.optString("title")
-                log("   • $title  [ratingKey ${m.optString("ratingKey")}]")
+                log("   • $title  [${m.optString("type")}, ratingKey ${m.optString("ratingKey")}]")
+                items.add(Item(serverId, m.optString("ratingKey"), title, m.optString("type")))
                 if (!found) {
                     selServerId = serverId
                     selRatingKey = m.optString("ratingKey")
                     selTitle = title
+                    selType = m.optString("type")
                     found = true
                 }
             }
@@ -271,7 +283,7 @@ class TestActivity : Activity() {
         if (found) {
             log("")
             log("Ausgewählt für Tests: $selTitle")
-            log("Jetzt Test A bis E nacheinander ausprobieren.")
+            log("Jetzt Test F und G ausprobieren.")
         } else {
             log("Kein Weiterschauen-Eintrag gefunden. Starte in Plex kurz einen Film, brich ab und lade neu.")
         }
@@ -302,6 +314,34 @@ class TestActivity : Activity() {
     }
 
     private fun metaKey() = "/library/metadata/$selRatingKey"
+
+    private fun nextItem() {
+        if (items.isEmpty()) {
+            log("Zuerst Schritt 2 ausführen.")
+            return
+        }
+        itemIndex = (itemIndex + 1) % items.size
+        val cur = items[itemIndex]
+        selServerId = cur.serverId
+        selRatingKey = cur.ratingKey
+        selTitle = cur.title
+        selType = cur.type
+        log("Ausgewählt: ${cur.title} (${cur.type})")
+    }
+
+    // Format der Plex-App ab 2026.19: startet die Wiedergabe direkt
+    private fun testF() {
+        if (!requireSelection()) return
+        val inner = "server://$selServerId/com.plexapp.plugins.library${metaKey()}"
+        launch("Test F", "plex://watch/video?uri=${enc(inner)}")
+    }
+
+    // Format der Plex-App ab 2026.20: öffnet die Detailseite
+    private fun testG() {
+        if (!requireSelection()) return
+        val tv = if (selType == "show") "tv/" else ""
+        launch("Test G", "plex://libraries/${enc(selServerId!!)}/unmatched/$tv${enc(metaKey())}")
+    }
 
     private fun testA() {
         if (!requireSelection()) return
