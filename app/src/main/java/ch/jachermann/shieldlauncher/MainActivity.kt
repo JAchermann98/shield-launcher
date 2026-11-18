@@ -235,6 +235,7 @@ fun HomeRoot(repo: PlexRepo, resumeCount: Int, homeCount: Int) {
     var focusedRow by remember { mutableIntStateOf(0) }
     var libScrolled by remember { mutableStateOf(false) }
     var showApps by remember { mutableStateOf(false) }
+    var showUpdates by remember { mutableStateOf(false) }
     val bridge = remember { FocusBridge() }
     val topReq = remember { listOf("plex", "yt", "apps", "start", "filme", "serien", "view", "update", "settings").associateWith { FocusRequester() } }
     // Ansicht für Filme/Serien: Bildansicht (false) oder Rasteransicht (true), getrennt gemerkt
@@ -261,6 +262,7 @@ fun HomeRoot(repo: PlexRepo, resumeCount: Int, homeCount: Int) {
     LaunchedEffect(homeCount) {
         if (homeCount > 0) {
             showApps = false
+            showUpdates = false
             autoFocusStart = true
             if (tab != Tab.START) {
                 tab = Tab.START
@@ -274,6 +276,7 @@ fun HomeRoot(repo: PlexRepo, resumeCount: Int, homeCount: Int) {
     BackHandler(enabled = true) {
         when {
             showApps -> showApps = false
+            showUpdates -> showUpdates = false
             tab != Tab.START -> tab = Tab.START
         }
     }
@@ -418,12 +421,16 @@ fun HomeRoot(repo: PlexRepo, resumeCount: Int, homeCount: Int) {
                 onFocused = { lastTop = it },
                 onDown = { bridge.toContent() },
                 gridMode = gridMode,
-                onToggleView = toggleView
+                onToggleView = toggleView,
+                onUpdates = { showUpdates = true }
             )
         }
 
         if (showApps) {
             AllAppsOverlay(onClose = { showApps = false })
+        }
+        if (showUpdates) {
+            UpdatesOverlay(onClose = { showUpdates = false })
         }
     }
 }
@@ -474,7 +481,8 @@ private fun TopBar(
     onFocused: (String) -> Unit,
     onDown: () -> Unit,
     gridMode: Boolean,
-    onToggleView: () -> Unit
+    onToggleView: () -> Unit,
+    onUpdates: () -> Unit
 ) {
     fun m(k: String): Modifier = Modifier.focusRequester(reqs.getValue(k)).onFocusChanged { if (it.isFocused) onFocused(k) }
     val context = LocalContext.current
@@ -490,6 +498,10 @@ private fun TopBar(
     LaunchedEffect(Unit) {
         try {
             updateAvailable = Updater.check(context) != null
+        } catch (e: Exception) {
+        }
+        try {
+            if (!updateAvailable) updateAvailable = Updater.checkSmartTube(context).updateAvailable
         } catch (e: Exception) {
         }
     }
@@ -521,23 +533,7 @@ private fun TopBar(
         Spacer(Modifier.width(22.dp))
         Box(Modifier.width(1.dp).height(20.dp).background(Color.White.copy(alpha = 0.25f)))
         Spacer(Modifier.width(16.dp))
-        IconButton(dot = updateAvailable, modifier = m("update"), onClick = {
-            scope.launch {
-                try {
-                    val u = Updater.check(context)
-                    if (u == null) {
-                        Toast.makeText(context, "Du hast bereits die neueste Version.", Toast.LENGTH_SHORT).show()
-                    } else {
-                        Toast.makeText(context, "Lade Version ${u.build} herunter …", Toast.LENGTH_SHORT).show()
-                        if (!Updater.install(context, u)) {
-                            Toast.makeText(context, "Bitte Installation erlauben und danach nochmals auf Update drücken.", Toast.LENGTH_LONG).show()
-                        }
-                    }
-                } catch (e: Exception) {
-                    Toast.makeText(context, "Update fehlgeschlagen: ${e.message}", Toast.LENGTH_LONG).show()
-                }
-            }
-        }) { color -> DownloadIcon(color) }
+        IconButton(dot = updateAvailable, modifier = m("update"), onClick = onUpdates) { color -> DownloadIcon(color) }
         Spacer(Modifier.width(8.dp))
         IconButton(dot = false, modifier = m("settings"), onClick = {
             val i = Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -1324,6 +1320,102 @@ private fun PosterCard(
             item.title, maxLines = 1, overflow = TextOverflow.Ellipsis,
             style = TextStyle(color = if (isFocused) TextMain else TextDim, fontSize = 10.sp)
         )
+    }
+}
+
+// ---------------------------------------------------------------- Updates
+
+@Composable
+private fun UpdatesOverlay(onClose: () -> Unit) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var launcherUpdate by remember { mutableStateOf<Updater.Update?>(null) }
+    var launcherText by remember { mutableStateOf("Wird geprüft …") }
+    var st by remember { mutableStateOf<Updater.SmartTubeStatus?>(null) }
+    var stText by remember { mutableStateOf("Wird geprüft …") }
+    var checkCount by remember { mutableIntStateOf(0) }
+    val first = remember { FocusRequester() }
+    val df = remember { SimpleDateFormat("dd.MM.yyyy", Locale.GERMANY) }
+
+    LaunchedEffect(checkCount) {
+        launcherText = "Wird geprüft …"
+        stText = "Wird geprüft …"
+        launcherUpdate = try { Updater.check(context) } catch (e: Exception) { null }
+        launcherText = launcherUpdate?.let { "Neue Version verfügbar (Build ${it.build})" }
+            ?: "Aktuell (Build ${Updater.currentBuild(context)})"
+        val s = try { Updater.checkSmartTube(context) } catch (e: Exception) { null }
+        st = s
+        stText = when {
+            s == null -> "Konnte nicht geprüft werden"
+            s.installedPkg == null -> "Nicht installiert"
+            s.updateAvailable -> "Neue Version verfügbar (vom ${df.format(Date(s.releaseAt))})"
+            else -> "Aktuell (installiert am ${df.format(Date(s.installedAt))})"
+        }
+    }
+    LaunchedEffect(Unit) {
+        delay(100)
+        try { first.requestFocus() } catch (e: Exception) { }
+    }
+
+    fun installHint(ok: Boolean) {
+        if (!ok) Toast.makeText(context, "Bitte Installation erlauben und danach nochmals drücken.", Toast.LENGTH_LONG).show()
+    }
+
+    Box(Modifier.fillMaxSize().background(Bg.copy(alpha = 0.95f)), contentAlignment = Alignment.Center) {
+        Column(Modifier.width(560.dp)) {
+            BasicText("Updates", style = TextStyle(color = TextMain, fontSize = 26.sp, fontWeight = FontWeight.Bold))
+            Spacer(Modifier.height(20.dp))
+            UpdateRow("Shield Launcher", launcherText, if (launcherUpdate != null) "Aktualisieren" else "Erneut prüfen", Modifier.focusRequester(first)) {
+                val u = launcherUpdate
+                if (u == null) {
+                    checkCount++
+                } else scope.launch {
+                    Toast.makeText(context, "Lade Shield Launcher herunter …", Toast.LENGTH_SHORT).show()
+                    try { installHint(Updater.install(context, u)) } catch (e: Exception) {
+                        Toast.makeText(context, "Update fehlgeschlagen: ${e.message}", Toast.LENGTH_LONG).show()
+                    }
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+            val s = st
+            val stAction = when {
+                s == null -> "Erneut prüfen"
+                s.installedPkg == null -> "Installieren"
+                s.updateAvailable -> "Aktualisieren"
+                else -> "Erneut prüfen"
+            }
+            UpdateRow("SmartTube (YouTube ohne Werbung)", stText, stAction, Modifier) {
+                if (s == null || (s.installedPkg != null && !s.updateAvailable)) {
+                    checkCount++
+                } else scope.launch {
+                    Toast.makeText(context, "Lade SmartTube herunter …", Toast.LENGTH_SHORT).show()
+                    try { installHint(Updater.installUrl(context, s.url, "smarttube.apk")) } catch (e: Exception) {
+                        Toast.makeText(context, "Download fehlgeschlagen: ${e.message}", Toast.LENGTH_LONG).show()
+                    }
+                }
+            }
+            Spacer(Modifier.height(20.dp))
+            BasicText(
+                "SmartTube wird direkt von der offiziellen GitHub-Seite geladen. Android installiert ein Update nur, wenn es vom selben Entwickler signiert ist. Mit Zurück schliesst du diese Übersicht.",
+                style = TextStyle(color = TextDim, fontSize = 12.sp, lineHeight = 17.sp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun UpdateRow(name: String, status: String, action: String, buttonModifier: Modifier, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(Tile).padding(horizontal = 18.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f)) {
+            BasicText(name, style = TextStyle(color = TextMain, fontSize = 16.sp, fontWeight = FontWeight.Bold))
+            Spacer(Modifier.height(3.dp))
+            BasicText(status, style = TextStyle(color = TextSoft, fontSize = 13.sp))
+        }
+        Spacer(Modifier.width(12.dp))
+        PillButton(action, buttonModifier) { onClick() }
     }
 }
 
