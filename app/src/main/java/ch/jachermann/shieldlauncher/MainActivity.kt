@@ -32,6 +32,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.BringIntoViewSpec
+import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.gestures.LocalBringIntoViewSpec
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
@@ -888,6 +889,31 @@ private fun LibraryScreen(
     val letters = remember(all) { listOf("#") + ('A'..'Z').map { it.toString() } }
     val headerCount = 2
 
+    val spacingPx = with(density) { 16.dp.toPx() }
+
+    /** Im Raster genau eine Reihe hoch/runter, in derselben Spalte bleiben. */
+    fun moveGrid(from: Int, delta: Int): Boolean {
+        var t = from + delta
+        if (t < 0) return false
+        if (t >= all.size) {
+            val lastRow = (all.size - 1) / 7
+            if (from / 7 < lastRow) t = all.size - 1 else return true
+        }
+        val fr = requesters[t]
+        if (fr != null) {
+            try { fr.requestFocus() } catch (e: Exception) { }
+        } else {
+            scope.launch {
+                val info = gridState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == from + 2 }
+                val step = (info?.size?.height ?: 300) + spacingPx
+                gridState.animateScrollBy(if (delta > 0) step else -step)
+                delay(16)
+                try { requesters[t]?.requestFocus() } catch (e: Exception) { }
+            }
+        }
+        return true
+    }
+
     fun focusGrid() {
         val fr = requesters[lastGridIdx]
             ?: requesters.keys.minOrNull()?.let { requesters[it] }
@@ -950,14 +976,20 @@ private fun LibraryScreen(
                     item = item,
                     modifier = Modifier.focusRequester(fr).onPreviewKeyEvent { ev ->
                         val ne = ev.nativeKeyEvent
-                        if (ne.action == AndroidKeyEvent.ACTION_DOWN && ne.keyCode == AndroidKeyEvent.KEYCODE_DPAD_RIGHT && index % 7 == 6) {
-                            letterMode = true
-                            scope.launch {
-                                delay(30)
-                                try { letterReqs[item.letter]?.requestFocus() } catch (e: Exception) { }
-                            }
-                            true
-                        } else false
+                        if (ne.action != AndroidKeyEvent.ACTION_DOWN) return@onPreviewKeyEvent false
+                        when (ne.keyCode) {
+                            AndroidKeyEvent.KEYCODE_DPAD_RIGHT -> if (index % 7 == 6) {
+                                letterMode = true
+                                scope.launch {
+                                    delay(30)
+                                    try { letterReqs[item.letter]?.requestFocus() } catch (e: Exception) { }
+                                }
+                                true
+                            } else false
+                            AndroidKeyEvent.KEYCODE_DPAD_DOWN -> moveGrid(index, 7)
+                            AndroidKeyEvent.KEYCODE_DPAD_UP -> if (index >= 7) moveGrid(index, -7) else false
+                            else -> false
+                        }
                     },
                     onFocus = { lastGridIdx = index; onFocusItem(it) },
                     onClick = { openItem(it, false) },
