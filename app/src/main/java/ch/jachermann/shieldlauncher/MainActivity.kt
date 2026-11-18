@@ -275,7 +275,8 @@ fun HomeRoot(repo: PlexRepo, resumeCount: Int) {
                 try {
                     val i = Intent(Intent.ACTION_VIEW, Uri.parse(uri))
                     i.setPackage("com.plexapp.android")
-                    i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    // Plex frisch starten, sonst bleibt es auf der zuletzt offenen Seite stehen
+                    i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
                     context.startActivity(i)
                 } catch (e: Exception) {
                     Toast.makeText(context, "Plex konnte nicht geöffnet werden.", Toast.LENGTH_LONG).show()
