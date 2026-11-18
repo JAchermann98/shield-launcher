@@ -79,6 +79,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
@@ -115,6 +116,12 @@ private val TextDim = Color(0xFFA9B4C4)
 private val Tile = Color(0xFF1C222C)
 
 private enum class Tab { START, FILME, SERIEN }
+
+/** Verbindet Kopfzeile und Inhalt: wohin der Fokus beim Hoch-/Runterdrücken springt. */
+private class FocusBridge {
+    var toTop: () -> Unit = {}
+    var toContent: () -> Unit = {}
+}
 
 // Layout der Startseite (in dp, Bildschirm 960 x 540)
 private const val FOCUS_Y = 318
@@ -209,6 +216,13 @@ fun HomeRoot(repo: PlexRepo, resumeCount: Int) {
     var focusedRow by remember { mutableIntStateOf(0) }
     var libScrolled by remember { mutableStateOf(false) }
     var showApps by remember { mutableStateOf(false) }
+    val bridge = remember { FocusBridge() }
+    val topReq = remember { listOf("plex", "yt", "apps", "start", "filme", "serien", "update", "settings").associateWith { FocusRequester() } }
+    var lastTop by remember { mutableStateOf<String?>(null) }
+    bridge.toTop = {
+        val k = lastTop ?: when (tab) { Tab.START -> "start"; Tab.FILME -> "filme"; Tab.SERIEN -> "serien" }
+        try { topReq[k]?.requestFocus() } catch (e: Exception) { }
+    }
 
     BackHandler(enabled = true) {
         when {
@@ -284,10 +298,11 @@ fun HomeRoot(repo: PlexRepo, resumeCount: Int) {
                 focusState = focusState,
                 onFocusItem = onFocusItem,
                 onRowFocused = { focusedRow = it },
-                openItem = openItem
+                openItem = openItem,
+                bridge = bridge
             )
-            Tab.FILME -> LibraryScreen(repo, servers, "movie", "Alle Filme", onFocusItem, openItem) { libScrolled = it }
-            Tab.SERIEN -> LibraryScreen(repo, servers, "show", "Alle Serien", onFocusItem, openItem) { libScrolled = it }
+            Tab.FILME -> LibraryScreen(repo, servers, "movie", "Alle Filme", onFocusItem, openItem, bridge) { libScrolled = it }
+            Tab.SERIEN -> LibraryScreen(repo, servers, "show", "Alle Serien", onFocusItem, openItem, bridge) { libScrolled = it }
         }
 
         Box(
@@ -298,7 +313,10 @@ fun HomeRoot(repo: PlexRepo, resumeCount: Int) {
             TopBar(
                 tab = tab,
                 onTab = { tab = it; focusedRow = 0; libScrolled = false },
-                onApps = { showApps = true }
+                onApps = { showApps = true },
+                reqs = topReq,
+                onFocused = { lastTop = it },
+                onDown = { bridge.toContent() }
             )
         }
 
@@ -346,7 +364,15 @@ fun Backdrop(focusState: MutableState<PlexItem?>, dim: Boolean) {
 // ---------------------------------------------------------------- Kopfzeile
 
 @Composable
-private fun TopBar(tab: Tab, onTab: (Tab) -> Unit, onApps: () -> Unit) {
+private fun TopBar(
+    tab: Tab,
+    onTab: (Tab) -> Unit,
+    onApps: () -> Unit,
+    reqs: Map<String, FocusRequester>,
+    onFocused: (String) -> Unit,
+    onDown: () -> Unit
+) {
+    fun m(k: String): Modifier = Modifier.focusRequester(reqs.getValue(k)).onFocusChanged { if (it.isFocused) onFocused(k) }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var time by remember { mutableStateOf(clock()) }
@@ -363,24 +389,30 @@ private fun TopBar(tab: Tab, onTab: (Tab) -> Unit, onApps: () -> Unit) {
         } catch (e: Exception) {
         }
     }
-    Row(Modifier.fillMaxWidth().padding(end = 48.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(
+        Modifier.fillMaxWidth().padding(end = 48.dp).onPreviewKeyEvent { ev ->
+            val ne = ev.nativeKeyEvent
+            if (ne.action == AndroidKeyEvent.ACTION_DOWN && ne.keyCode == AndroidKeyEvent.KEYCODE_DPAD_DOWN) { onDown(); true } else false
+        },
+        verticalAlignment = Alignment.CenterVertically
+    ) {
         BasicText(time, style = TextStyle(color = TextMain, fontSize = 18.sp, fontWeight = FontWeight.SemiBold))
         Spacer(Modifier.width(18.dp))
-        PillButton("Plex") { launchApp(context, listOf("com.plexapp.android")) }
+        PillButton("Plex", m("plex")) { launchApp(context, listOf("com.plexapp.android")) }
         Spacer(Modifier.width(6.dp))
-        PillButton("YouTube") { launchYouTube(context) }
+        PillButton("YouTube", m("yt")) { launchYouTube(context) }
         Spacer(Modifier.width(6.dp))
-        PillButton("Alle Apps") { onApps() }
+        PillButton("Alle Apps", m("apps")) { onApps() }
         Spacer(Modifier.weight(1f))
-        TabButton("Start", tab == Tab.START) { onTab(Tab.START) }
+        TabButton("Start", tab == Tab.START, m("start")) { onTab(Tab.START) }
         Spacer(Modifier.width(4.dp))
-        TabButton("Filme", tab == Tab.FILME) { onTab(Tab.FILME) }
+        TabButton("Filme", tab == Tab.FILME, m("filme")) { onTab(Tab.FILME) }
         Spacer(Modifier.width(4.dp))
-        TabButton("Serien", tab == Tab.SERIEN) { onTab(Tab.SERIEN) }
+        TabButton("Serien", tab == Tab.SERIEN, m("serien")) { onTab(Tab.SERIEN) }
         Spacer(Modifier.width(22.dp))
         Box(Modifier.width(1.dp).height(20.dp).background(Color.White.copy(alpha = 0.25f)))
         Spacer(Modifier.width(16.dp))
-        IconButton(dot = updateAvailable, onClick = {
+        IconButton(dot = updateAvailable, modifier = m("update"), onClick = {
             scope.launch {
                 try {
                     val u = Updater.check(context)
@@ -398,7 +430,7 @@ private fun TopBar(tab: Tab, onTab: (Tab) -> Unit, onApps: () -> Unit) {
             }
         }) { color -> DownloadIcon(color) }
         Spacer(Modifier.width(8.dp))
-        IconButton(dot = false, onClick = {
+        IconButton(dot = false, modifier = m("settings"), onClick = {
             val i = Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             try { context.startActivity(i) } catch (e: Exception) { }
         }) { color ->
@@ -410,11 +442,11 @@ private fun TopBar(tab: Tab, onTab: (Tab) -> Unit, onApps: () -> Unit) {
 private fun clock(): String = SimpleDateFormat("HH:mm", Locale.GERMANY).format(Date())
 
 @Composable
-fun PillButton(label: String, onClick: () -> Unit) {
+fun PillButton(label: String, modifier: Modifier = Modifier, onClick: () -> Unit) {
     val src = remember { MutableInteractionSource() }
     val isFocused by src.collectIsFocusedAsState()
     Box(
-        Modifier
+        modifier
             .clip(RoundedCornerShape(50))
             .background(if (isFocused) TextMain else Color.White.copy(alpha = 0.10f))
             .clickable(interactionSource = src, indication = null) { onClick() }
@@ -426,11 +458,11 @@ fun PillButton(label: String, onClick: () -> Unit) {
 
 /** Reiter für Start / Filme / Serien: grösser, die aktive Seite unterstrichen. */
 @Composable
-private fun TabButton(label: String, selected: Boolean, onClick: () -> Unit) {
+private fun TabButton(label: String, selected: Boolean, modifier: Modifier, onClick: () -> Unit) {
     val src = remember { MutableInteractionSource() }
     val isFocused by src.collectIsFocusedAsState()
     Column(
-        Modifier
+        modifier
             .clip(RoundedCornerShape(50))
             .background(if (isFocused) TextMain else Color.Transparent)
             .clickable(interactionSource = src, indication = null) { onClick() }
@@ -458,12 +490,12 @@ private fun TabButton(label: String, selected: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-private fun IconButton(dot: Boolean, onClick: () -> Unit, icon: @Composable (Color) -> Unit) {
+private fun IconButton(dot: Boolean, modifier: Modifier, onClick: () -> Unit, icon: @Composable (Color) -> Unit) {
     val src = remember { MutableInteractionSource() }
     val isFocused by src.collectIsFocusedAsState()
     Box(Modifier.size(32.dp)) {
         Box(
-            Modifier
+            modifier
                 .size(32.dp)
                 .clip(RoundedCornerShape(50))
                 .background(if (isFocused) TextMain else Color.White.copy(alpha = 0.10f))
@@ -501,7 +533,8 @@ private fun StartScreen(
     focusState: MutableState<PlexItem?>,
     onFocusItem: (PlexItem) -> Unit,
     onRowFocused: (Int) -> Unit,
-    openItem: (PlexItem, Boolean) -> Unit
+    openItem: (PlexItem, Boolean) -> Unit,
+    bridge: FocusBridge
 ) {
     var focusedRow by remember { mutableIntStateOf(0) }
     var didInitialFocus by remember { mutableStateOf(false) }
@@ -515,6 +548,8 @@ private fun StartScreen(
             ?: requesters.entries.filter { it.key.first == r }.minByOrNull { it.key.second }?.value
         try { fr?.requestFocus() } catch (e: Exception) { }
     }
+
+    bridge.toContent = { focusRow(focusedRow) }
 
     LaunchedEffect(rows.isNotEmpty()) {
         if (rows.isNotEmpty() && !didInitialFocus) {
@@ -532,7 +567,8 @@ private fun StartScreen(
                 if (ne.action != AndroidKeyEvent.ACTION_DOWN) return@onPreviewKeyEvent false
                 when (ne.keyCode) {
                     AndroidKeyEvent.KEYCODE_DPAD_UP -> {
-                        if (focusedRow > 0) { focusRow(focusedRow - 1); true } else false
+                        if (focusedRow > 0) focusRow(focusedRow - 1) else bridge.toTop()
+                        true
                     }
                     AndroidKeyEvent.KEYCODE_DPAD_DOWN -> {
                         if (focusedRow < rows.size - 1) focusRow(focusedRow + 1)
@@ -600,8 +636,8 @@ fun Hero(focusState: MutableState<PlexItem?>, status: String) {
         BasicText(status, style = TextStyle(color = TextSoft, fontSize = 16.sp))
         return
     }
-    Crossfade(targetState = item, animationSpec = tween(260), label = "hero") { cur ->
-        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.Bottom) {
+    Crossfade(targetState = item, animationSpec = tween(260), label = "hero", modifier = Modifier.fillMaxSize()) { cur ->
+        Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Bottom) {
             TitleOrLogo(cur)
             if (cur.subtitle.isNotEmpty()) {
                 Spacer(Modifier.height(4.dp))
@@ -640,10 +676,12 @@ private fun TitleOrLogo(item: PlexItem) {
             modifier = Modifier.height(84.dp).widthIn(max = 340.dp).fillMaxWidth()
         )
     } else {
-        BasicText(
-            item.title, maxLines = 2, overflow = TextOverflow.Ellipsis,
-            style = TextStyle(color = TextMain, fontSize = 34.sp, fontWeight = FontWeight.Bold, lineHeight = 37.sp)
-        )
+        Box(Modifier.height(84.dp).fillMaxWidth(), contentAlignment = Alignment.BottomStart) {
+            BasicText(
+                item.title, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                style = TextStyle(color = TextMain, fontSize = 34.sp, fontWeight = FontWeight.Bold, lineHeight = 37.sp)
+            )
+        }
     }
 }
 
@@ -788,8 +826,12 @@ private fun LibraryScreen(
     allTitle: String,
     onFocusItem: (PlexItem) -> Unit,
     openItem: (PlexItem, Boolean) -> Unit,
+    bridge: FocusBridge,
     onScrolled: (Boolean) -> Unit
 ) {
+    var lastGridIdx by remember(type) { mutableIntStateOf(-1) }
+    var letterMode by remember(type) { mutableStateOf(false) }
+    val letterReqs = remember(type) { (listOf("#") + ('A'..'Z').map { it.toString() }).associateWith { FocusRequester() } }
     val scope = rememberCoroutineScope()
     val cached = remember(type) { repo.loadLibraryCache(type) }
     var newest by remember(type) { mutableStateOf(cached.first) }
@@ -828,6 +870,13 @@ private fun LibraryScreen(
     val letters = remember(all) { listOf("#") + ('A'..'Z').map { it.toString() } }
     val headerCount = 2
 
+    fun focusGrid() {
+        val fr = requesters[lastGridIdx]
+            ?: requesters.keys.minOrNull()?.let { requesters[it] }
+        try { if (fr != null) fr.requestFocus() else firstFocus.requestFocus() } catch (e: Exception) { }
+    }
+    bridge.toContent = { if (lastGridIdx >= 0 && requesters[lastGridIdx] != null) focusGrid() else try { firstFocus.requestFocus() } catch (e: Exception) { } }
+
     Box(Modifier.fillMaxSize()) {
         LazyVerticalGrid(
             columns = GridCells.Fixed(7),
@@ -838,7 +887,10 @@ private fun LibraryScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             item(span = { GridItemSpan(maxLineSpan) }) {
-                Column {
+                Column(Modifier.onPreviewKeyEvent { ev ->
+                    val ne = ev.nativeKeyEvent
+                    if (ne.action == AndroidKeyEvent.ACTION_DOWN && ne.keyCode == AndroidKeyEvent.KEYCODE_DPAD_UP) { bridge.toTop(); true } else false
+                }) {
                     BasicText("Neu", style = TextStyle(color = TextMain, fontSize = 15.sp, fontWeight = FontWeight.Bold))
                     Spacer(Modifier.height(4.dp))
                     CompositionLocalProvider(LocalBringIntoViewSpec provides pivot) {
@@ -877,8 +929,18 @@ private fun LibraryScreen(
                 }
                 PosterCard(
                     item = item,
-                    modifier = Modifier.focusRequester(fr),
-                    onFocus = onFocusItem,
+                    modifier = Modifier.focusRequester(fr).onPreviewKeyEvent { ev ->
+                        val ne = ev.nativeKeyEvent
+                        if (ne.action == AndroidKeyEvent.ACTION_DOWN && ne.keyCode == AndroidKeyEvent.KEYCODE_DPAD_RIGHT && index % 7 == 6) {
+                            letterMode = true
+                            scope.launch {
+                                delay(30)
+                                try { letterReqs[item.letter]?.requestFocus() } catch (e: Exception) { }
+                            }
+                            true
+                        } else false
+                    },
+                    onFocus = { lastGridIdx = index; onFocusItem(it) },
                     onClick = { openItem(it, false) },
                     onLongClick = { openItem(it, true) }
                 )
@@ -891,13 +953,27 @@ private fun LibraryScreen(
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             letters.forEach { l ->
-                LetterButton(l) {
+                LetterButton(
+                    l,
+                    Modifier
+                        .focusRequester(letterReqs.getValue(l))
+                        .focusProperties { canFocus = letterMode }
+                        .onPreviewKeyEvent { ev ->
+                            val ne = ev.nativeKeyEvent
+                            if (ne.action == AndroidKeyEvent.ACTION_DOWN && ne.keyCode == AndroidKeyEvent.KEYCODE_DPAD_LEFT) {
+                                focusGrid()
+                                letterMode = false
+                                true
+                            } else false
+                        }
+                ) {
                     val idx = all.indexOfFirst { it.letter == l }
                     if (idx >= 0) {
                         scope.launch {
                             gridState.scrollToItem(idx + headerCount)
-                            delay(60)
+                            delay(80)
                             try { requesters[idx]?.requestFocus() } catch (e: Exception) { }
+                            letterMode = false
                         }
                     }
                 }
@@ -907,11 +983,11 @@ private fun LibraryScreen(
 }
 
 @Composable
-private fun LetterButton(letter: String, onClick: () -> Unit) {
+private fun LetterButton(letter: String, modifier: Modifier, onClick: () -> Unit) {
     val src = remember { MutableInteractionSource() }
     val isFocused by src.collectIsFocusedAsState()
     Box(
-        Modifier
+        modifier
             .size(18.dp, 15.dp)
             .clip(RoundedCornerShape(4.dp))
             .background(if (isFocused) TextMain else Color.Transparent)
