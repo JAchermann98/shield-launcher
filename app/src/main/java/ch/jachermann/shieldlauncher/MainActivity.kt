@@ -1522,6 +1522,7 @@ private fun YouTubeSearchScreen(
     val scope = rememberCoroutineScope()
     var query by remember { mutableStateOf(TextFieldValue("")) }
     var editing by remember { mutableStateOf(false) }
+    var fieldHadFocus by remember { mutableStateOf(false) }
     var results by remember { mutableStateOf<List<PlexRow>>(emptyList()) }
     var status by remember { mutableStateOf("Suchbegriff eingeben oder sprechen") }
     val boxFocus = remember { FocusRequester() }
@@ -1567,8 +1568,10 @@ private fun YouTubeSearchScreen(
 
     LaunchedEffect(editing) {
         if (editing) {
-            delay(50)
+            fieldHadFocus = false
+            delay(80)
             try { fieldFocus.requestFocus() } catch (e: Exception) { }
+            delay(120)
             keyboard?.show()
         }
     }
@@ -1630,11 +1633,34 @@ private fun YouTubeSearchScreen(
                         keyboardActions = KeyboardActions(onSearch = {
                             keyboard?.hide()
                             editing = false
+                            try { boxFocus.requestFocus() } catch (e: Exception) { }
                             runSearch(query.text)
                         }),
-                        modifier = Modifier.fillMaxWidth().focusRequester(fieldFocus).onFocusChanged {
-                            if (!it.isFocused && editing) editing = false
-                        }
+                        modifier = Modifier.fillMaxWidth().focusRequester(fieldFocus)
+                            .onFocusChanged {
+                                // onFocusChanged meldet sich schon beim Einblenden (noch ohne Fokus),
+                                // darum erst beenden, wenn das Feld wirklich einmal Fokus hatte
+                                if (it.isFocused) {
+                                    fieldHadFocus = true
+                                    keyboard?.show()
+                                } else if (fieldHadFocus && editing) {
+                                    fieldHadFocus = false
+                                    editing = false
+                                }
+                            }
+                            .onPreviewKeyEvent { ev ->
+                                val ne = ev.nativeKeyEvent
+                                if (ne.action != AndroidKeyEvent.ACTION_DOWN) return@onPreviewKeyEvent false
+                                when (ne.keyCode) {
+                                    AndroidKeyEvent.KEYCODE_DPAD_UP, AndroidKeyEvent.KEYCODE_DPAD_DOWN -> {
+                                        keyboard?.hide()
+                                        editing = false
+                                        try { boxFocus.requestFocus() } catch (e: Exception) { }
+                                        true
+                                    }
+                                    else -> false
+                                }
+                            }
                     )
                 } else {
                     BasicText(
