@@ -882,8 +882,10 @@ private fun LandscapeCard(
 
 // Layout der Filme-/Serien-Seite (dp): oben Bild und Infos, unten das Fenster mit den Reihen
 private const val LIB_WINDOW_TOP = 232
-private const val LIB_STEP = 164
-private const val LIB_COLS = 9
+private const val LIB_COLS = 7
+private const val LIB_NEW_H = 152        // Höhe der Neu-Reihe
+private const val LIB_FIRST_POSTER_H = 216 // erste Posterreihe inkl. Überschrift
+private const val LIB_POSTER_H = 194     // weitere Posterreihen
 
 @Composable
 private fun LibraryScreen(
@@ -938,6 +940,16 @@ private fun LibraryScreen(
     val posterReqs = remember(type) { mutableMapOf<Int, FocusRequester>() }
 
     LaunchedEffect(focusedRow) { onScrolled(focusedRow > 0) }
+
+    /** Oberkante einer Reihe (dp), gemessen ab der ersten Reihe. */
+    fun rowTop(r: Int): Int {
+        var top = 0
+        if (r <= 0) return 0
+        if (hasNew) top += LIB_NEW_H
+        val p = r - offsetRows
+        if (p > 0) top += LIB_FIRST_POSTER_H + (p - 1) * LIB_POSTER_H
+        return top
+    }
 
     /** Reihe anwählen: Fenster gleitet hin, Auswahl bleibt in derselben Spalte. */
     fun focusRow(row: Int) {
@@ -1001,7 +1013,7 @@ private fun LibraryScreen(
                 val from = (focusedRow - 2).coerceAtLeast(0)
                 val to = (focusedRow + 3).coerceAtMost(rowCount - 1)
                 for (r in from..to) key(type, r) {
-                    val target = 6 + (r - focusedRow) * LIB_STEP
+                    val target = 6 + rowTop(r) - rowTop(focusedRow)
                     val y by animateDpAsState(target.dp, tween(420, easing = FastOutSlowInEasing), label = "libY")
                     val a by animateFloatAsState(
                         when {
