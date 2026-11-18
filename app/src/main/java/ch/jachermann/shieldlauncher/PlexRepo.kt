@@ -1,6 +1,7 @@
 package ch.jachermann.shieldlauncher
 
 import android.content.Context
+import androidx.compose.runtime.Immutable
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -11,6 +12,7 @@ import java.net.URLEncoder
 import java.util.UUID
 
 /** Ein Titel, wie ihn der Launcher anzeigt. */
+@Immutable
 data class PlexItem(
     val serverId: String,
     val ratingKey: String,
@@ -33,6 +35,7 @@ data class PlexItem(
         get() = if (durationMs > 0 && viewOffsetMs > 0) (viewOffsetMs.toFloat() / durationMs).coerceIn(0f, 1f) else 0f
 }
 
+@Immutable
 data class PlexRow(val title: String, val items: List<PlexItem>, val landscape: Boolean, val resume: Boolean)
 
 data class PlexServer(val id: String, val name: String, val base: String, val token: String)
@@ -209,9 +212,9 @@ class PlexRepo(context: Context) {
             year = year,
             durationMs = m.optLong("duration"),
             viewOffsetMs = m.optLong("viewOffset"),
-            posterUrl = img(s, poster, 300, 450),
-            landscapeUrl = img(s, landscape.ifEmpty { backdrop }, 480, 270),
-            backdropUrl = img(s, backdrop, 1920, 1080),
+            posterUrl = img(s, poster, 240, 360),
+            landscapeUrl = img(s, landscape.ifEmpty { backdrop }, 400, 225),
+            backdropUrl = img(s, backdrop, 1280, 720),
             resolution = res,
             audio = audio,
             summary = m.optString("summary"),
@@ -312,6 +315,78 @@ class PlexRepo(context: Context) {
             }
         }
         null
+    }
+
+    // ---------- Zwischenspeicher ----------
+
+    private val cacheFile = java.io.File(context.filesDir, "rows.json")
+
+    fun saveServers(servers: List<PlexServer>) {
+        val arr = JSONArray()
+        servers.forEach {
+            arr.put(JSONObject().put("id", it.id).put("name", it.name).put("base", it.base).put("token", it.token))
+        }
+        prefs.edit().putString("servers", arr.toString()).apply()
+    }
+
+    fun loadServers(): List<PlexServer> = try {
+        val arr = JSONArray(prefs.getString("servers", "[]"))
+        (0 until arr.length()).map {
+            val o = arr.getJSONObject(it)
+            PlexServer(o.getString("id"), o.getString("name"), o.getString("base"), o.getString("token"))
+        }
+    } catch (e: Exception) {
+        emptyList()
+    }
+
+    private fun itemToJson(i: PlexItem): JSONObject = JSONObject()
+        .put("serverId", i.serverId).put("ratingKey", i.ratingKey).put("type", i.type)
+        .put("title", i.title).put("subtitle", i.subtitle).put("year", i.year)
+        .put("durationMs", i.durationMs).put("viewOffsetMs", i.viewOffsetMs)
+        .put("posterUrl", i.posterUrl ?: "").put("landscapeUrl", i.landscapeUrl ?: "").put("backdropUrl", i.backdropUrl ?: "")
+        .put("resolution", i.resolution).put("audio", i.audio).put("summary", i.summary)
+        .put("guid", i.guid ?: "").put("fromWatchlist", i.fromWatchlist)
+
+    private fun itemFromJson(o: JSONObject): PlexItem = PlexItem(
+        serverId = o.optString("serverId"), ratingKey = o.optString("ratingKey"), type = o.optString("type"),
+        title = o.optString("title"), subtitle = o.optString("subtitle"), year = o.optString("year"),
+        durationMs = o.optLong("durationMs"), viewOffsetMs = o.optLong("viewOffsetMs"),
+        posterUrl = o.optString("posterUrl").ifEmpty { null },
+        landscapeUrl = o.optString("landscapeUrl").ifEmpty { null },
+        backdropUrl = o.optString("backdropUrl").ifEmpty { null },
+        resolution = o.optString("resolution"), audio = o.optString("audio"), summary = o.optString("summary"),
+        guid = o.optString("guid").ifEmpty { null }, fromWatchlist = o.optBoolean("fromWatchlist")
+    )
+
+    fun saveCache(rows: List<PlexRow>) {
+        try {
+            val arr = JSONArray()
+            rows.forEach { r ->
+                val items = JSONArray()
+                r.items.forEach { items.put(itemToJson(it)) }
+                arr.put(JSONObject().put("title", r.title).put("landscape", r.landscape).put("resume", r.resume).put("items", items))
+            }
+            cacheFile.writeText(arr.toString())
+        } catch (e: Exception) {
+        }
+    }
+
+    fun loadCache(): List<PlexRow> = try {
+        if (!cacheFile.exists()) emptyList() else {
+            val arr = JSONArray(cacheFile.readText())
+            (0 until arr.length()).map { idx ->
+                val o = arr.getJSONObject(idx)
+                val items = o.getJSONArray("items")
+                PlexRow(
+                    o.getString("title"),
+                    (0 until items.length()).map { itemFromJson(items.getJSONObject(it)) },
+                    o.optBoolean("landscape"),
+                    o.optBoolean("resume")
+                )
+            }
+        }
+    } catch (e: Exception) {
+        emptyList()
     }
 
     // ---------- Links in die Plex-App ----------
