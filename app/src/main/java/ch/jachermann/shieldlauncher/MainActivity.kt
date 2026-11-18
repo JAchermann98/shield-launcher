@@ -9,6 +9,14 @@ import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
 import android.widget.Toast
+import android.view.KeyEvent as AndroidKeyEvent
+import androidx.compose.foundation.Canvas
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -342,7 +350,7 @@ private fun TopBar(tab: Tab, onTab: (Tab) -> Unit, onApps: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var time by remember { mutableStateOf(clock()) }
-    var updateLabel by remember { mutableStateOf("Update") }
+    var updateAvailable by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
         while (true) {
             time = clock()
@@ -351,7 +359,7 @@ private fun TopBar(tab: Tab, onTab: (Tab) -> Unit, onApps: () -> Unit) {
     }
     LaunchedEffect(Unit) {
         try {
-            if (Updater.check(context) != null) updateLabel = "Update verfügbar"
+            updateAvailable = Updater.check(context) != null
         } catch (e: Exception) {
         }
     }
@@ -364,13 +372,15 @@ private fun TopBar(tab: Tab, onTab: (Tab) -> Unit, onApps: () -> Unit) {
         Spacer(Modifier.width(6.dp))
         PillButton("Alle Apps") { onApps() }
         Spacer(Modifier.weight(1f))
-        PillButton("Start", selected = tab == Tab.START) { onTab(Tab.START) }
-        Spacer(Modifier.width(6.dp))
-        PillButton("Filme", selected = tab == Tab.FILME) { onTab(Tab.FILME) }
-        Spacer(Modifier.width(6.dp))
-        PillButton("Serien", selected = tab == Tab.SERIEN) { onTab(Tab.SERIEN) }
-        Spacer(Modifier.width(18.dp))
-        PillButton(updateLabel) {
+        TabButton("Start", tab == Tab.START) { onTab(Tab.START) }
+        Spacer(Modifier.width(4.dp))
+        TabButton("Filme", tab == Tab.FILME) { onTab(Tab.FILME) }
+        Spacer(Modifier.width(4.dp))
+        TabButton("Serien", tab == Tab.SERIEN) { onTab(Tab.SERIEN) }
+        Spacer(Modifier.width(22.dp))
+        Box(Modifier.width(1.dp).height(20.dp).background(Color.White.copy(alpha = 0.25f)))
+        Spacer(Modifier.width(16.dp))
+        IconButton(dot = updateAvailable, onClick = {
             scope.launch {
                 try {
                     val u = Updater.check(context)
@@ -386,11 +396,13 @@ private fun TopBar(tab: Tab, onTab: (Tab) -> Unit, onApps: () -> Unit) {
                     Toast.makeText(context, "Update fehlgeschlagen: ${e.message}", Toast.LENGTH_LONG).show()
                 }
             }
-        }
-        Spacer(Modifier.width(6.dp))
-        PillButton("Einstellungen") {
+        }) { color -> DownloadIcon(color) }
+        Spacer(Modifier.width(8.dp))
+        IconButton(dot = false, onClick = {
             val i = Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             try { context.startActivity(i) } catch (e: Exception) { }
+        }) { color ->
+            Image(Icons.Filled.Settings, contentDescription = "Einstellungen", colorFilter = ColorFilter.tint(color), modifier = Modifier.size(18.dp))
         }
     }
 }
@@ -398,29 +410,85 @@ private fun TopBar(tab: Tab, onTab: (Tab) -> Unit, onApps: () -> Unit) {
 private fun clock(): String = SimpleDateFormat("HH:mm", Locale.GERMANY).format(Date())
 
 @Composable
-fun PillButton(label: String, selected: Boolean = false, onClick: () -> Unit) {
+fun PillButton(label: String, onClick: () -> Unit) {
     val src = remember { MutableInteractionSource() }
     val isFocused by src.collectIsFocusedAsState()
-    val bg = when {
-        isFocused -> TextMain
-        selected -> Color.White.copy(alpha = 0.24f)
-        else -> Color.White.copy(alpha = 0.10f)
-    }
     Box(
         Modifier
             .clip(RoundedCornerShape(50))
-            .background(bg)
+            .background(if (isFocused) TextMain else Color.White.copy(alpha = 0.10f))
             .clickable(interactionSource = src, indication = null) { onClick() }
             .padding(horizontal = 13.dp, vertical = 6.dp)
+    ) {
+        BasicText(label, style = TextStyle(color = if (isFocused) Bg else TextMain, fontSize = 13.sp, fontWeight = FontWeight.SemiBold))
+    }
+}
+
+/** Reiter für Start / Filme / Serien: grösser, die aktive Seite unterstrichen. */
+@Composable
+private fun TabButton(label: String, selected: Boolean, onClick: () -> Unit) {
+    val src = remember { MutableInteractionSource() }
+    val isFocused by src.collectIsFocusedAsState()
+    Column(
+        Modifier
+            .clip(RoundedCornerShape(50))
+            .background(if (isFocused) TextMain else Color.Transparent)
+            .clickable(interactionSource = src, indication = null) { onClick() }
+            .padding(horizontal = 14.dp, vertical = 5.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
     ) {
         BasicText(
             label,
             style = TextStyle(
-                color = if (isFocused) Bg else TextMain,
-                fontSize = 13.sp,
+                color = when {
+                    isFocused -> Bg
+                    selected -> TextMain
+                    else -> TextSoft.copy(alpha = 0.8f)
+                },
+                fontSize = 17.sp,
                 fontWeight = if (selected || isFocused) FontWeight.Bold else FontWeight.SemiBold
             )
         )
+        Spacer(Modifier.height(3.dp))
+        Box(
+            Modifier.width(18.dp).height(2.dp).clip(RoundedCornerShape(1.dp))
+                .background(if (selected && !isFocused) TextMain else Color.Transparent)
+        )
+    }
+}
+
+@Composable
+private fun IconButton(dot: Boolean, onClick: () -> Unit, icon: @Composable (Color) -> Unit) {
+    val src = remember { MutableInteractionSource() }
+    val isFocused by src.collectIsFocusedAsState()
+    Box(Modifier.size(32.dp)) {
+        Box(
+            Modifier
+                .size(32.dp)
+                .clip(RoundedCornerShape(50))
+                .background(if (isFocused) TextMain else Color.White.copy(alpha = 0.10f))
+                .clickable(interactionSource = src, indication = null) { onClick() },
+            contentAlignment = Alignment.Center
+        ) {
+            icon(if (isFocused) Bg else TextMain)
+        }
+        if (dot) {
+            Box(Modifier.align(Alignment.TopEnd).size(9.dp).clip(RoundedCornerShape(50)).background(Color(0xFF7FB2FF)))
+        }
+    }
+}
+
+/** Einfaches Download-Symbol (Pfeil nach unten auf einer Ablage). */
+@Composable
+private fun DownloadIcon(color: Color) {
+    Canvas(Modifier.size(16.dp)) {
+        val w = size.width
+        val h = size.height
+        val stroke = w * 0.12f
+        drawLine(color, Offset(w / 2, h * 0.08f), Offset(w / 2, h * 0.62f), stroke, StrokeCap.Round)
+        drawLine(color, Offset(w * 0.25f, h * 0.40f), Offset(w / 2, h * 0.65f), stroke, StrokeCap.Round)
+        drawLine(color, Offset(w * 0.75f, h * 0.40f), Offset(w / 2, h * 0.65f), stroke, StrokeCap.Round)
+        drawLine(color, Offset(w * 0.12f, h * 0.90f), Offset(w * 0.88f, h * 0.90f), stroke, StrokeCap.Round)
     }
 }
 
@@ -436,24 +504,47 @@ private fun StartScreen(
     openItem: (PlexItem, Boolean) -> Unit
 ) {
     var focusedRow by remember { mutableIntStateOf(0) }
-    val firstFocus = remember { FocusRequester() }
     var didInitialFocus by remember { mutableStateOf(false) }
+    // Zuletzt gewählte Kachel je Zeile und die Fokus-Anker aller sichtbaren Kacheln
+    val lastInRow = remember { mutableStateMapOf<Int, Int>() }
+    val requesters = remember { mutableMapOf<Pair<Int, Int>, FocusRequester>() }
+
+    fun focusRow(r: Int) {
+        val idx = lastInRow[r] ?: 0
+        val fr = requesters[r to idx]
+            ?: requesters.entries.filter { it.key.first == r }.minByOrNull { it.key.second }?.value
+        try { fr?.requestFocus() } catch (e: Exception) { }
+    }
 
     LaunchedEffect(rows.isNotEmpty()) {
         if (rows.isNotEmpty() && !didInitialFocus) {
-            delay(120)
-            try {
-                firstFocus.requestFocus()
-                didInitialFocus = true
-            } catch (e: Exception) {
-            }
+            delay(150)
+            focusRow(0)
+            didInitialFocus = true
         }
     }
 
-    Box(Modifier.fillMaxSize()) {
+    Box(
+        Modifier
+            .fillMaxSize()
+            .onPreviewKeyEvent { ev ->
+                val ne = ev.nativeKeyEvent
+                if (ne.action != AndroidKeyEvent.ACTION_DOWN) return@onPreviewKeyEvent false
+                when (ne.keyCode) {
+                    AndroidKeyEvent.KEYCODE_DPAD_UP -> {
+                        if (focusedRow > 0) { focusRow(focusedRow - 1); true } else false
+                    }
+                    AndroidKeyEvent.KEYCODE_DPAD_DOWN -> {
+                        if (focusedRow < rows.size - 1) focusRow(focusedRow + 1)
+                        true
+                    }
+                    else -> false
+                }
+            }
+    ) {
         // Infos zum ausgewählten Titel, unten bündig über der aktiven Zeile
         Box(
-            Modifier.offset(x = 48.dp, y = 66.dp).width(470.dp).height((FOCUS_Y - 66 - 12).dp),
+            Modifier.offset(x = 48.dp, y = 66.dp).width(470.dp).height((FOCUS_Y - 66 - 10).dp),
             contentAlignment = Alignment.BottomStart
         ) {
             Hero(focusState, status)
@@ -478,7 +569,8 @@ private fun StartScreen(
             )
             ContentRow(
                 row = row,
-                firstFocus = if (i == 0) firstFocus else null,
+                rowIndex = i,
+                requesters = requesters,
                 modifier = Modifier
                     .offset { IntOffset(0, y.roundToPx()) }
                     .graphicsLayer { this.alpha = alpha }
@@ -488,7 +580,10 @@ private fun StartScreen(
                             onRowFocused(i)
                         }
                     },
-                onFocus = onFocusItem,
+                onFocus = { item, idx ->
+                    lastInRow[i] = idx
+                    onFocusItem(item)
+                },
                 onClick = { openItem(it, false) },
                 onLongClick = { openItem(it, true) }
             )
@@ -584,7 +679,7 @@ fun Badge(text: String) {
 
 // ---------------------------------------------------------------- Zeilen
 
-/** Hält die ausgewählte Kachel links an fester Position, die Zeile gleitet darunter durch. */
+/** Hält die ausgewählte Kachel an fester Position, die Zeile gleitet darunter durch. */
 @Composable
 private fun rememberPivotSpec(pivot: Dp): BringIntoViewSpec {
     val px = with(LocalDensity.current) { pivot.toPx() }
@@ -598,26 +693,32 @@ private fun rememberPivotSpec(pivot: Dp): BringIntoViewSpec {
 @Composable
 private fun ContentRow(
     row: PlexRow,
-    firstFocus: FocusRequester?,
+    rowIndex: Int,
+    requesters: MutableMap<Pair<Int, Int>, FocusRequester>,
     modifier: Modifier,
-    onFocus: (PlexItem) -> Unit,
+    onFocus: (PlexItem, Int) -> Unit,
     onClick: (PlexItem) -> Unit,
     onLongClick: (PlexItem) -> Unit
 ) {
-    val pivot = rememberPivotSpec(48.dp)
+    // Ausgewählte Kachel an zweiter Stelle: die vorherige ist links noch angeschnitten sichtbar
+    val pivot = rememberPivotSpec(118.dp)
     Column(modifier.fillMaxWidth()) {
         BasicText(row.title, modifier = Modifier.padding(start = 48.dp), style = TextStyle(color = TextMain, fontSize = 15.sp, fontWeight = FontWeight.Bold))
-        Spacer(Modifier.height(4.dp))
         CompositionLocalProvider(LocalBringIntoViewSpec provides pivot) {
             LazyRow(
-                horizontalArrangement = Arrangement.spacedBy(14.dp),
-                contentPadding = PaddingValues(start = 48.dp, end = 600.dp, top = 8.dp, bottom = 6.dp)
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                contentPadding = PaddingValues(start = 44.dp, end = 600.dp, top = 4.dp, bottom = 2.dp)
             ) {
                 itemsIndexed(row.items, key = { i, it -> "${it.serverId}/${it.ratingKey}/$i" }) { index, item ->
+                    val fr = remember { FocusRequester() }
+                    DisposableEffect(rowIndex, index) {
+                        requesters[rowIndex to index] = fr
+                        onDispose { requesters.remove(rowIndex to index) }
+                    }
                     LandscapeCard(
                         item = item,
-                        modifier = if (index == 0 && firstFocus != null) Modifier.focusRequester(firstFocus) else Modifier,
-                        onFocus = onFocus,
+                        modifier = Modifier.focusRequester(fr),
+                        onFocus = { onFocus(it, index) },
                         onClick = onClick,
                         onLongClick = onLongClick
                     )
@@ -627,6 +728,7 @@ private fun ContentRow(
     }
 }
 
+/** Breite Kachel; ausgewählt mit abgesetztem weissem Rahmen wie bei Dispatch. */
 @Composable
 private fun LandscapeCard(
     item: PlexItem,
@@ -637,17 +739,20 @@ private fun LandscapeCard(
 ) {
     val src = remember { MutableInteractionSource() }
     val isFocused by src.collectIsFocusedAsState()
-    val scale by animateFloatAsState(if (isFocused) 1.08f else 1f, tween(180), label = "scale")
-    val shape = RoundedCornerShape(8.dp)
-    Column(modifier.width(176.dp)) {
+    val scale by animateFloatAsState(if (isFocused) 1.06f else 1f, tween(200, easing = FastOutSlowInEasing), label = "scale")
+    val ring by animateFloatAsState(if (isFocused) 1f else 0f, tween(200), label = "ring")
+    val inner = RoundedCornerShape(8.dp)
+    val outer = RoundedCornerShape(12.dp)
+    Column(modifier.width(184.dp)) {
         Box(
             Modifier
-                .size(176.dp, 99.dp)
+                .size(184.dp, 107.dp)
                 .graphicsLayer { scaleX = scale; scaleY = scale }
                 .onFocusChanged { if (it.isFocused) onFocus(item) }
-                .clip(shape)
+                .border(2.5.dp, TextMain.copy(alpha = ring), outer)
+                .padding(4.dp)
+                .clip(inner)
                 .background(Tile)
-                .border(2.dp, if (isFocused) TextMain else Color.Transparent, shape)
                 .combinedClickable(interactionSource = src, indication = null, onLongClick = { onLongClick(item) }, onClick = { onClick(item) })
         ) {
             val url = item.landscapeUrl ?: item.posterUrl
@@ -663,9 +768,10 @@ private fun LandscapeCard(
                 }
             }
         }
-        Spacer(Modifier.height(6.dp))
+        Spacer(Modifier.height(4.dp))
         BasicText(
             if (item.subtitle.isNotEmpty()) "${item.title} · ${item.subtitle}" else item.title,
+            modifier = Modifier.padding(horizontal = 4.dp),
             maxLines = 1, overflow = TextOverflow.Ellipsis,
             style = TextStyle(color = if (isFocused) TextMain else TextDim, fontSize = 11.sp)
         )
@@ -692,7 +798,7 @@ private fun LibraryScreen(
     val gridState = rememberLazyGridState()
     val firstFocus = remember(type) { FocusRequester() }
     val requesters = remember(type) { mutableStateMapOf<Int, FocusRequester>() }
-    val pivot = rememberPivotSpec(48.dp)
+    val pivot = rememberPivotSpec(8.dp)
 
     LaunchedEffect(type, servers) {
         if (servers.isEmpty()) return@LaunchedEffect
@@ -737,8 +843,8 @@ private fun LibraryScreen(
                     Spacer(Modifier.height(4.dp))
                     CompositionLocalProvider(LocalBringIntoViewSpec provides pivot) {
                         LazyRow(
-                            horizontalArrangement = Arrangement.spacedBy(14.dp),
-                            contentPadding = PaddingValues(start = 0.dp, end = 600.dp, top = 8.dp, bottom = 6.dp)
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            contentPadding = PaddingValues(start = 8.dp, end = 600.dp, top = 8.dp, bottom = 6.dp)
                         ) {
                             itemsIndexed(newest, key = { i, it -> "n/${it.serverId}/${it.ratingKey}/$i" }) { index, item ->
                                 LandscapeCard(
