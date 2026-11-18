@@ -9,6 +9,17 @@ import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
 import android.widget.Toast
+import android.speech.RecognizerIntent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.TextFieldValue
 import android.view.KeyEvent as AndroidKeyEvent
 import androidx.compose.foundation.Canvas
 import androidx.compose.material.icons.Icons
@@ -127,7 +138,9 @@ private val TextSoft = Color(0xFFC9D3E0)
 private val TextDim = Color(0xFFA9B4C4)
 private val Tile = Color(0xFF1C222C)
 
-private enum class Tab { START, FILME, SERIEN, YOUTUBE }
+private enum class Tab { START, FILME, SERIEN, YOUTUBE, YTSEARCH }
+
+private val Tab.isYouTube: Boolean get() = this == Tab.YOUTUBE || this == Tab.YTSEARCH
 
 /** Verbindet Kopfzeile und Inhalt: wohin der Fokus beim Hoch-/Runterdrücken springt. */
 private class FocusBridge {
@@ -144,6 +157,7 @@ class MainActivity : ComponentActivity() {
 
     private var resumeCount by mutableIntStateOf(0)
     private var homeCount by mutableIntStateOf(0)
+    private var visible = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -155,8 +169,19 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        // Home-Taste, während der Launcher schon offen ist
-        if (intent.hasCategory(Intent.CATEGORY_HOME)) homeCount++
+        // Home-Taste, während der Launcher schon sichtbar ist: zur Startseite des Bereichs.
+        // Kommt man aus einer anderen App zurück, bleibt alles, wie es war.
+        if (intent.hasCategory(Intent.CATEGORY_HOME) && visible) homeCount++
+    }
+
+    override fun onStart() {
+        super.onStart()
+        visible = true
+    }
+
+    override fun onStop() {
+        visible = false
+        super.onStop()
     }
 
     override fun onResume() {
@@ -237,20 +262,20 @@ fun HomeRoot(repo: PlexRepo, resumeCount: Int, homeCount: Int) {
     var showApps by remember { mutableStateOf(false) }
     var showUpdates by remember { mutableStateOf(false) }
     val bridge = remember { FocusBridge() }
-    val topReq = remember { listOf("plex", "yt", "apps", "start", "filme", "serien", "view", "update", "settings").associateWith { FocusRequester() } }
+    val topReq = remember { listOf("plex", "yt", "apps", "start", "filme", "serien", "ytstart", "ytsearch", "view", "update", "settings").associateWith { FocusRequester() } }
     // Ansicht für Filme/Serien: Bildansicht (false) oder Rasteransicht (true), getrennt gemerkt
     val uiPrefs = remember { context.getSharedPreferences("launcher_ui", Context.MODE_PRIVATE) }
     var gridMovies by remember { mutableStateOf(uiPrefs.getBoolean("grid_movie", false)) }
     var gridShows by remember { mutableStateOf(uiPrefs.getBoolean("grid_show", false)) }
     var gridStart by remember { mutableStateOf(uiPrefs.getBoolean("grid_start", false)) }
     var gridYt by remember { mutableStateOf(uiPrefs.getBoolean("grid_youtube", false)) }
-    val gridMode = when (tab) { Tab.FILME -> gridMovies; Tab.SERIEN -> gridShows; Tab.START -> gridStart; Tab.YOUTUBE -> gridYt }
+    val gridMode = when (tab) { Tab.FILME -> gridMovies; Tab.SERIEN -> gridShows; Tab.START -> gridStart; Tab.YOUTUBE, Tab.YTSEARCH -> gridYt }
     val ytRepo = remember { YouTubeRepo(context) }
     val toggleView: () -> Unit = {
         when (tab) {
             Tab.FILME -> { gridMovies = !gridMovies; uiPrefs.edit().putBoolean("grid_movie", gridMovies).apply() }
             Tab.SERIEN -> { gridShows = !gridShows; uiPrefs.edit().putBoolean("grid_show", gridShows).apply() }
-            Tab.YOUTUBE -> { gridYt = !gridYt; uiPrefs.edit().putBoolean("grid_youtube", gridYt).apply() }
+            Tab.YOUTUBE, Tab.YTSEARCH -> { gridYt = !gridYt; uiPrefs.edit().putBoolean("grid_youtube", gridYt).apply() }
             Tab.START -> { gridStart = !gridStart; uiPrefs.edit().putBoolean("grid_start", gridStart).apply() }
         }
     }
@@ -258,7 +283,7 @@ fun HomeRoot(repo: PlexRepo, resumeCount: Int, homeCount: Int) {
     // Nur beim Start der App bzw. nach der Home-Taste springt die Auswahl automatisch in die Zeilen
     var autoFocusStart by remember { mutableStateOf(true) }
     bridge.toTop = {
-        val k = lastTop ?: when (tab) { Tab.START -> "start"; Tab.FILME -> "filme"; Tab.SERIEN -> "serien"; Tab.YOUTUBE -> "yt" }
+        val k = lastTop ?: when (tab) { Tab.START -> "start"; Tab.FILME -> "filme"; Tab.SERIEN -> "serien"; Tab.YOUTUBE -> "ytstart"; Tab.YTSEARCH -> "ytsearch" }
         try { topReq[k]?.requestFocus() } catch (e: Exception) { }
     }
 
@@ -266,9 +291,10 @@ fun HomeRoot(repo: PlexRepo, resumeCount: Int, homeCount: Int) {
         if (homeCount > 0) {
             showApps = false
             showUpdates = false
-            autoFocusStart = true
-            if (tab != Tab.START) {
-                tab = Tab.START
+            val home = if (tab.isYouTube) Tab.YOUTUBE else Tab.START
+            if (home == Tab.START) autoFocusStart = true
+            if (tab != home) {
+                tab = home
                 focusedRow = 0
                 libScrolled = false
                 lastTop = null
@@ -363,7 +389,7 @@ fun HomeRoot(repo: PlexRepo, resumeCount: Int, homeCount: Int) {
         }
     }
 
-    val topBarVisible = if (tab == Tab.START || tab == Tab.YOUTUBE) focusedRow == 0 else !libScrolled
+    val topBarVisible = if (tab == Tab.START || tab.isYouTube) focusedRow == 0 else !libScrolled
     val topAlpha by animateFloatAsState(if (topBarVisible) 1f else 0f, tween(300), label = "topAlpha")
 
     Box(
@@ -412,6 +438,15 @@ fun HomeRoot(repo: PlexRepo, resumeCount: Int, homeCount: Int) {
                     yt = ytRepo,
                     repo = repo,
                     resumeCount = resumeCount,
+                    focusState = focusState,
+                    onFocusItem = onFocusItem,
+                    onRowFocused = { focusedRow = it },
+                    bridge = bridge,
+                    active = active,
+                    gridMode = gridYt
+                )
+                Tab.YTSEARCH -> YouTubeSearchScreen(
+                    yt = ytRepo,
                     focusState = focusState,
                     onFocusItem = onFocusItem,
                     onRowFocused = { focusedRow = it },
@@ -529,17 +564,22 @@ private fun TopBar(
         BasicText(time, style = TextStyle(color = TextMain, fontSize = 18.sp, fontWeight = FontWeight.SemiBold))
         Spacer(Modifier.width(18.dp))
         // Bereiche: Plex (Start/Filme/Serien) und YouTube. Erneutes Drücken auf YouTube öffnet SmartTube selbst.
-        PillButton("Plex", m("plex"), selected = tab != Tab.YOUTUBE) { if (tab == Tab.YOUTUBE) onTab(Tab.START) }
+        PillButton("Plex", m("plex"), selected = !tab.isYouTube) { if (tab.isYouTube) onTab(Tab.START) }
         Spacer(Modifier.width(6.dp))
-        PillButton("YouTube", m("yt"), selected = tab == Tab.YOUTUBE) { if (tab == Tab.YOUTUBE) launchYouTube(context) else onTab(Tab.YOUTUBE) }
+        PillButton("YouTube", m("yt"), selected = tab.isYouTube) { if (tab.isYouTube) launchYouTube(context) else onTab(Tab.YOUTUBE) }
         Spacer(Modifier.width(6.dp))
         PillButton("Alle Apps", m("apps")) { onApps() }
         Spacer(Modifier.weight(1f))
-        if (tab != Tab.YOUTUBE) TabButton("Start", tab == Tab.START, m("start")) { onTab(Tab.START) }
+        if (tab.isYouTube) {
+            TabButton("Start", tab == Tab.YOUTUBE, m("ytstart")) { onTab(Tab.YOUTUBE) }
+            Spacer(Modifier.width(4.dp))
+            TabButton("Suche", tab == Tab.YTSEARCH, m("ytsearch")) { onTab(Tab.YTSEARCH) }
+        }
+        if (!tab.isYouTube) TabButton("Start", tab == Tab.START, m("start")) { onTab(Tab.START) }
         Spacer(Modifier.width(4.dp))
-        if (tab != Tab.YOUTUBE) TabButton("Filme", tab == Tab.FILME, m("filme")) { onTab(Tab.FILME) }
+        if (!tab.isYouTube) TabButton("Filme", tab == Tab.FILME, m("filme")) { onTab(Tab.FILME) }
         Spacer(Modifier.width(4.dp))
-        if (tab != Tab.YOUTUBE) TabButton("Serien", tab == Tab.SERIEN, m("serien")) { onTab(Tab.SERIEN) }
+        if (!tab.isYouTube) TabButton("Serien", tab == Tab.SERIEN, m("serien")) { onTab(Tab.SERIEN) }
         // Umschalter Bild-/Rasteransicht (für jede Seite getrennt gemerkt)
         Spacer(Modifier.width(8.dp))
         IconButton(dot = false, modifier = m("view"), onClick = onToggleView) { color ->
@@ -1447,6 +1487,158 @@ private fun YouTubeLogin(yt: YouTubeRepo, onDone: () -> Unit) {
             BasicText(it, style = TextStyle(color = Color(0xFFFFB4A8), fontSize = 15.sp))
             Spacer(Modifier.height(12.dp))
             PillButton("Neuen Code anfordern") { attempt++ }
+        }
+    }
+}
+
+@Composable
+private fun YouTubeSearchScreen(
+    yt: YouTubeRepo,
+    focusState: MutableState<PlexItem?>,
+    onFocusItem: (PlexItem) -> Unit,
+    onRowFocused: (Int) -> Unit,
+    bridge: FocusBridge,
+    active: Boolean,
+    gridMode: Boolean
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var query by remember { mutableStateOf(TextFieldValue("")) }
+    var editing by remember { mutableStateOf(false) }
+    var results by remember { mutableStateOf<List<PlexRow>>(emptyList()) }
+    var status by remember { mutableStateOf("Suchbegriff eingeben oder sprechen") }
+    val boxFocus = remember { FocusRequester() }
+    val fieldFocus = remember { FocusRequester() }
+    val micFocus = remember { FocusRequester() }
+    val keyboard = LocalSoftwareKeyboardController.current
+    // Eigene Brücke für die Ergebnis-Zeilen: "hoch" aus der ersten Zeile führt zum Suchfeld
+    val rowsBridge = remember { FocusBridge() }
+    rowsBridge.toTop = { try { boxFocus.requestFocus() } catch (e: Exception) { } }
+    if (active) bridge.toContent = { try { boxFocus.requestFocus() } catch (e: Exception) { } }
+
+    fun runSearch(q: String) {
+        val text = q.trim()
+        if (text.isEmpty()) return
+        status = "Suche nach „$text“ …"
+        results = emptyList()
+        scope.launch {
+            try {
+                val found = yt.search(text)
+                results = if (found.isEmpty()) emptyList() else found.chunked(12).mapIndexed { i, part ->
+                    PlexRow(if (i == 0) "Ergebnisse für „$text“" else "Weitere Ergebnisse (${i + 1})", part, landscape = true, resume = false)
+                }
+                status = if (found.isEmpty()) "Nichts gefunden für „$text“" else ""
+                found.firstOrNull()?.let { onFocusItem(it) }
+                if (found.isNotEmpty()) {
+                    delay(150)
+                    rowsBridge.toContent()
+                }
+            } catch (e: Exception) {
+                status = "Suche fehlgeschlagen: ${e.message}"
+            }
+        }
+    }
+
+    // Spracheingabe über die Android-Spracherkennung
+    val speech = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
+        val spoken = res.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()
+        if (!spoken.isNullOrBlank()) {
+            query = TextFieldValue(spoken, TextRange(spoken.length))
+            runSearch(spoken)
+        }
+    }
+
+    LaunchedEffect(editing) {
+        if (editing) {
+            delay(50)
+            try { fieldFocus.requestFocus() } catch (e: Exception) { }
+            keyboard?.show()
+        }
+    }
+
+    Box(Modifier.fillMaxSize()) {
+        StartScreen(
+            rows = results,
+            status = status,
+            focusState = focusState,
+            onFocusItem = onFocusItem,
+            onRowFocused = onRowFocused,
+            openItem = { item, _ -> openYouTubeVideo(context, item.ratingKey) },
+            bridge = rowsBridge,
+            active = true,
+            autoFocus = false,
+            onAutoFocused = {},
+            gridMode = gridMode
+        )
+
+        if (results.isEmpty() && status.isNotEmpty()) {
+            BasicText(status, modifier = Modifier.offset(x = 66.dp, y = 120.dp), style = TextStyle(color = TextSoft, fontSize = 14.sp))
+        }
+
+        // Suchleiste unter der Kopfzeile
+        Row(
+            Modifier.offset(x = 48.dp, y = 68.dp).onPreviewKeyEvent { ev ->
+                val ne = ev.nativeKeyEvent
+                if (ne.action != AndroidKeyEvent.ACTION_DOWN || editing) return@onPreviewKeyEvent false
+                when (ne.keyCode) {
+                    AndroidKeyEvent.KEYCODE_DPAD_UP -> { bridge.toTop(); true }
+                    AndroidKeyEvent.KEYCODE_DPAD_DOWN -> { if (results.isNotEmpty()) rowsBridge.toContent(); true }
+                    else -> false
+                }
+            },
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            val src = remember { MutableInteractionSource() }
+            val boxFocused by src.collectIsFocusedAsState()
+            Box(
+                Modifier
+                    .width(420.dp)
+                    .height(40.dp)
+                    .clip(RoundedCornerShape(50))
+                    .background(if (boxFocused || editing) Color.White.copy(alpha = 0.22f) else Color.White.copy(alpha = 0.10f))
+                    .border(2.dp, if (boxFocused || editing) TextMain else Color.Transparent, RoundedCornerShape(50))
+                    .focusRequester(boxFocus)
+                    .clickable(interactionSource = src, indication = null) { editing = true }
+                    .padding(horizontal = 18.dp),
+                contentAlignment = Alignment.CenterStart
+            ) {
+                if (editing) {
+                    BasicTextField(
+                        value = query,
+                        onValueChange = { query = it },
+                        singleLine = true,
+                        textStyle = TextStyle(color = TextMain, fontSize = 16.sp),
+                        cursorBrush = SolidColor(TextMain),
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                        keyboardActions = KeyboardActions(onSearch = {
+                            keyboard?.hide()
+                            editing = false
+                            runSearch(query.text)
+                        }),
+                        modifier = Modifier.fillMaxWidth().focusRequester(fieldFocus).onFocusChanged {
+                            if (!it.isFocused && editing) editing = false
+                        }
+                    )
+                } else {
+                    BasicText(
+                        query.text.ifEmpty { "YouTube durchsuchen …" },
+                        maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        style = TextStyle(color = if (query.text.isEmpty()) TextDim else TextMain, fontSize = 16.sp)
+                    )
+                }
+            }
+            Spacer(Modifier.width(10.dp))
+            PillButton("Spracheingabe", Modifier.focusRequester(micFocus)) {
+                try {
+                    val i = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+                        .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                        .putExtra(RecognizerIntent.EXTRA_LANGUAGE, "de-CH")
+                        .putExtra(RecognizerIntent.EXTRA_PROMPT, "Was möchtest du suchen?")
+                    speech.launch(i)
+                } catch (e: Exception) {
+                    Toast.makeText(context, "Spracheingabe ist nicht verfügbar.", Toast.LENGTH_SHORT).show()
+                }
+            }
         }
     }
 }

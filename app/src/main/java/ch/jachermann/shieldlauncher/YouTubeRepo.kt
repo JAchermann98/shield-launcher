@@ -161,7 +161,9 @@ class YouTubeRepo(context: Context) {
 
     // ---------- Inhalte ----------
 
-    private fun browse(browseId: String): JSONObject? {
+    private fun browse(browseId: String): JSONObject? = innertube("browse", "browseId", browseId)
+
+    private fun innertube(endpoint: String, key: String, value: String): JSONObject? {
         val token = accessToken() ?: return null
         val body = JSONObject()
             .put("context", JSONObject().put("client", JSONObject()
@@ -169,9 +171,9 @@ class YouTubeRepo(context: Context) {
                 .put("clientVersion", CLIENT_VERSION)
                 .put("hl", "de")
                 .put("gl", "CH")))
-            .put("browseId", browseId)
+            .put(key, value)
         val (code, text) = request(
-            "POST", "https://www.youtube.com/youtubei/v1/browse?prettyPrint=false",
+            "POST", "https://www.youtube.com/youtubei/v1/$endpoint?prettyPrint=false",
             mapOf(
                 "Content-Type" to "application/json",
                 "Authorization" to "Bearer $token",
@@ -279,6 +281,13 @@ class YouTubeRepo(context: Context) {
         val out = mutableListOf<PlexItem>()
         collectTiles(browse(browseId) ?: return emptyList(), out)
         return out.distinctBy { it.ratingKey }.take(max)
+    }
+
+    /** Suche: liefert die gefundenen Videos. */
+    suspend fun search(query: String): List<PlexItem> = withContext(Dispatchers.IO) {
+        val out = mutableListOf<PlexItem>()
+        collectTiles(innertube("search", "query", query) ?: return@withContext emptyList(), out)
+        out.distinctBy { it.ratingKey }.take(60)
     }
 
     suspend fun loadRows(): List<PlexRow> = withContext(Dispatchers.IO) {
