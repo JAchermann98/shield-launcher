@@ -785,24 +785,29 @@ private fun LandscapeCard(
         Box(
             Modifier
                 .size(184.dp, 107.dp)
-                .graphicsLayer { scaleX = scale; scaleY = scale }
                 .onFocusChanged { if (it.isFocused) onFocus(item) }
-                .border(2.5.dp, TextMain.copy(alpha = ring), outer)
-                .padding(4.dp)
-                .clip(inner)
-                .background(Tile)
                 .combinedClickable(interactionSource = src, indication = null, onLongClick = { onLongClick(item) }, onClick = { onClick(item) })
         ) {
-            val url = item.landscapeUrl ?: item.posterUrl
-            if (url != null) {
-                AsyncImage(model = url, contentDescription = item.title, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
-            }
-            if (item.progress > 0f) {
-                Box(
-                    Modifier.align(Alignment.BottomStart).fillMaxWidth().padding(7.dp).height(3.dp)
-                        .clip(RoundedCornerShape(2.dp)).background(Color.White.copy(alpha = 0.3f))
-                ) {
-                    Box(Modifier.fillMaxHeight().fillMaxWidth(item.progress).background(TextMain))
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .graphicsLayer { scaleX = scale; scaleY = scale }
+                    .border(2.5.dp, TextMain.copy(alpha = ring), outer)
+                    .padding(4.dp)
+                    .clip(inner)
+                    .background(Tile)
+            ) {
+                val url = item.landscapeUrl ?: item.posterUrl
+                if (url != null) {
+                    AsyncImage(model = url, contentDescription = item.title, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+                }
+                if (item.progress > 0f) {
+                    Box(
+                        Modifier.align(Alignment.BottomStart).fillMaxWidth().padding(7.dp).height(3.dp)
+                            .clip(RoundedCornerShape(2.dp)).background(Color.White.copy(alpha = 0.3f))
+                    ) {
+                        Box(Modifier.fillMaxHeight().fillMaxWidth(item.progress).background(TextMain))
+                    }
                 }
             }
         }
@@ -841,6 +846,18 @@ private fun LibraryScreen(
     val firstFocus = remember(type) { FocusRequester() }
     val requesters = remember(type) { mutableStateMapOf<Int, FocusRequester>() }
     val pivot = rememberPivotSpec(8.dp)
+    val density = LocalDensity.current
+    val gridSpec = remember(density) {
+        val topPx = with(density) { 64.dp.toPx() }
+        val bottomPx = with(density) { 24.dp.toPx() }
+        object : BringIntoViewSpec {
+            override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float): Float = when {
+                offset < topPx -> offset - topPx
+                offset + size > containerSize - bottomPx -> offset + size - (containerSize - bottomPx)
+                else -> 0f
+            }
+        }
+    }
 
     LaunchedEffect(type, servers) {
         if (servers.isEmpty()) return@LaunchedEffect
@@ -878,6 +895,7 @@ private fun LibraryScreen(
     bridge.toContent = { if (lastGridIdx >= 0 && requesters[lastGridIdx] != null) focusGrid() else try { firstFocus.requestFocus() } catch (e: Exception) { } }
 
     Box(Modifier.fillMaxSize()) {
+        CompositionLocalProvider(LocalBringIntoViewSpec provides gridSpec) {
         LazyVerticalGrid(
             columns = GridCells.Fixed(7),
             state = gridState,
@@ -946,6 +964,7 @@ private fun LibraryScreen(
                 )
             }
         }
+        }
 
         // A–Z-Leiste
         Column(
@@ -1011,21 +1030,28 @@ private fun PosterCard(
     val scale by animateFloatAsState(if (isFocused) 1.08f else 1f, tween(160), label = "pscale")
     val shape = RoundedCornerShape(7.dp)
     Column(modifier) {
+        // Äussere Box: Fokus und Klick, unverändert in der Grösse (kein Hüpfen beim Scrollen)
         Box(
             Modifier
                 .fillMaxWidth()
                 .aspectRatio(2f / 3f)
-                .graphicsLayer { scaleX = scale; scaleY = scale }
                 .onFocusChanged { if (it.isFocused) onFocus(item) }
-                .clip(shape)
-                .background(Tile)
-                .border(2.dp, if (isFocused) TextMain else Color.Transparent, shape)
                 .combinedClickable(interactionSource = src, indication = null, onLongClick = { onLongClick(item) }, onClick = { onClick(item) })
         ) {
-            if (item.posterUrl != null) {
-                AsyncImage(model = item.posterUrl, contentDescription = item.title, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
-            } else {
-                BasicText(item.title, modifier = Modifier.padding(6.dp), style = TextStyle(color = TextDim, fontSize = 11.sp))
+            // Innere Box: nur die sichtbare Vergrösserung
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .graphicsLayer { scaleX = scale; scaleY = scale }
+                    .clip(shape)
+                    .background(Tile)
+                    .border(2.dp, if (isFocused) TextMain else Color.Transparent, shape)
+            ) {
+                if (item.posterUrl != null) {
+                    AsyncImage(model = item.posterUrl, contentDescription = item.title, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+                } else {
+                    BasicText(item.title, modifier = Modifier.padding(6.dp), style = TextStyle(color = TextDim, fontSize = 11.sp))
+                }
             }
         }
         Spacer(Modifier.height(5.dp))
