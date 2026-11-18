@@ -462,19 +462,23 @@ class PlexRepo(context: Context) {
     private fun itemsToJson(items: List<PlexItem>): JSONArray = JSONArray().also { a -> items.forEach { a.put(itemToJson(it)) } }
     private fun itemsFromJson(a: JSONArray): List<PlexItem> = (0 until a.length()).map { itemFromJson(a.getJSONObject(it)) }
 
-    fun saveCache(rows: List<PlexRow>) {
+    fun saveCache(rows: List<PlexRow>) = saveRowsFile("rows_v4.json", rows)
+
+    fun loadCache(): List<PlexRow> = loadRowsFile("rows_v4.json")
+
+    fun saveRowsFile(name: String, rows: List<PlexRow>) {
         try {
             val arr = JSONArray()
             rows.forEach { r ->
                 arr.put(JSONObject().put("title", r.title).put("landscape", r.landscape).put("resume", r.resume).put("items", itemsToJson(r.items)))
             }
-            File(filesDir, "rows_v4.json").writeText(arr.toString())
+            File(filesDir, name).writeText(arr.toString())
         } catch (e: Exception) {
         }
     }
 
-    fun loadCache(): List<PlexRow> = try {
-        val f = File(filesDir, "rows_v4.json")
+    fun loadRowsFile(name: String): List<PlexRow> = try {
+        val f = File(filesDir, name)
         if (!f.exists()) emptyList() else {
             val arr = JSONArray(f.readText())
             (0 until arr.length()).map { idx ->

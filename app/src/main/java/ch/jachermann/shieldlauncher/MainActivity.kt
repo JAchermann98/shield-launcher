@@ -127,7 +127,7 @@ private val TextSoft = Color(0xFFC9D3E0)
 private val TextDim = Color(0xFFA9B4C4)
 private val Tile = Color(0xFF1C222C)
 
-private enum class Tab { START, FILME, SERIEN }
+private enum class Tab { START, FILME, SERIEN, YOUTUBE }
 
 /** Verbindet Kopfzeile und Inhalt: wohin der Fokus beim Hoch-/Runterdrücken springt. */
 private class FocusBridge {
@@ -243,11 +243,14 @@ fun HomeRoot(repo: PlexRepo, resumeCount: Int, homeCount: Int) {
     var gridMovies by remember { mutableStateOf(uiPrefs.getBoolean("grid_movie", false)) }
     var gridShows by remember { mutableStateOf(uiPrefs.getBoolean("grid_show", false)) }
     var gridStart by remember { mutableStateOf(uiPrefs.getBoolean("grid_start", false)) }
-    val gridMode = when (tab) { Tab.FILME -> gridMovies; Tab.SERIEN -> gridShows; Tab.START -> gridStart }
+    var gridYt by remember { mutableStateOf(uiPrefs.getBoolean("grid_youtube", false)) }
+    val gridMode = when (tab) { Tab.FILME -> gridMovies; Tab.SERIEN -> gridShows; Tab.START -> gridStart; Tab.YOUTUBE -> gridYt }
+    val ytRepo = remember { YouTubeRepo(context) }
     val toggleView: () -> Unit = {
         when (tab) {
             Tab.FILME -> { gridMovies = !gridMovies; uiPrefs.edit().putBoolean("grid_movie", gridMovies).apply() }
             Tab.SERIEN -> { gridShows = !gridShows; uiPrefs.edit().putBoolean("grid_show", gridShows).apply() }
+            Tab.YOUTUBE -> { gridYt = !gridYt; uiPrefs.edit().putBoolean("grid_youtube", gridYt).apply() }
             Tab.START -> { gridStart = !gridStart; uiPrefs.edit().putBoolean("grid_start", gridStart).apply() }
         }
     }
@@ -255,7 +258,7 @@ fun HomeRoot(repo: PlexRepo, resumeCount: Int, homeCount: Int) {
     // Nur beim Start der App bzw. nach der Home-Taste springt die Auswahl automatisch in die Zeilen
     var autoFocusStart by remember { mutableStateOf(true) }
     bridge.toTop = {
-        val k = lastTop ?: when (tab) { Tab.START -> "start"; Tab.FILME -> "filme"; Tab.SERIEN -> "serien" }
+        val k = lastTop ?: when (tab) { Tab.START -> "start"; Tab.FILME -> "filme"; Tab.SERIEN -> "serien"; Tab.YOUTUBE -> "yt" }
         try { topReq[k]?.requestFocus() } catch (e: Exception) { }
     }
 
@@ -360,7 +363,7 @@ fun HomeRoot(repo: PlexRepo, resumeCount: Int, homeCount: Int) {
         }
     }
 
-    val topBarVisible = if (tab == Tab.START) focusedRow == 0 else !libScrolled
+    val topBarVisible = if (tab == Tab.START || tab == Tab.YOUTUBE) focusedRow == 0 else !libScrolled
     val topAlpha by animateFloatAsState(if (topBarVisible) 1f else 0f, tween(300), label = "topAlpha")
 
     Box(
@@ -405,6 +408,17 @@ fun HomeRoot(repo: PlexRepo, resumeCount: Int, homeCount: Int) {
                 )
                 Tab.FILME -> LibraryScreen(repo, servers, "movie", "Alle Filme", focusState, onFocusItem, openItem, bridge, active, gridMovies) { libScrolled = it }
                 Tab.SERIEN -> LibraryScreen(repo, servers, "show", "Alle Serien", focusState, onFocusItem, openItem, bridge, active, gridShows) { libScrolled = it }
+                Tab.YOUTUBE -> YouTubeScreen(
+                    yt = ytRepo,
+                    repo = repo,
+                    resumeCount = resumeCount,
+                    focusState = focusState,
+                    onFocusItem = onFocusItem,
+                    onRowFocused = { focusedRow = it },
+                    bridge = bridge,
+                    active = active,
+                    gridMode = gridYt
+                )
             }
         }
 
@@ -514,17 +528,18 @@ private fun TopBar(
     ) {
         BasicText(time, style = TextStyle(color = TextMain, fontSize = 18.sp, fontWeight = FontWeight.SemiBold))
         Spacer(Modifier.width(18.dp))
-        PillButton("Plex", m("plex")) { launchApp(context, listOf("com.plexapp.android")) }
+        // Bereiche: Plex (Start/Filme/Serien) und YouTube. Erneutes Drücken auf YouTube öffnet SmartTube selbst.
+        PillButton("Plex", m("plex"), selected = tab != Tab.YOUTUBE) { if (tab == Tab.YOUTUBE) onTab(Tab.START) }
         Spacer(Modifier.width(6.dp))
-        PillButton("YouTube", m("yt")) { launchYouTube(context) }
+        PillButton("YouTube", m("yt"), selected = tab == Tab.YOUTUBE) { if (tab == Tab.YOUTUBE) launchYouTube(context) else onTab(Tab.YOUTUBE) }
         Spacer(Modifier.width(6.dp))
         PillButton("Alle Apps", m("apps")) { onApps() }
         Spacer(Modifier.weight(1f))
-        TabButton("Start", tab == Tab.START, m("start")) { onTab(Tab.START) }
+        if (tab != Tab.YOUTUBE) TabButton("Start", tab == Tab.START, m("start")) { onTab(Tab.START) }
         Spacer(Modifier.width(4.dp))
-        TabButton("Filme", tab == Tab.FILME, m("filme")) { onTab(Tab.FILME) }
+        if (tab != Tab.YOUTUBE) TabButton("Filme", tab == Tab.FILME, m("filme")) { onTab(Tab.FILME) }
         Spacer(Modifier.width(4.dp))
-        TabButton("Serien", tab == Tab.SERIEN, m("serien")) { onTab(Tab.SERIEN) }
+        if (tab != Tab.YOUTUBE) TabButton("Serien", tab == Tab.SERIEN, m("serien")) { onTab(Tab.SERIEN) }
         // Umschalter Bild-/Rasteransicht (für jede Seite getrennt gemerkt)
         Spacer(Modifier.width(8.dp))
         IconButton(dot = false, modifier = m("view"), onClick = onToggleView) { color ->
@@ -547,13 +562,19 @@ private fun TopBar(
 private fun clock(): String = SimpleDateFormat("HH:mm", Locale.GERMANY).format(Date())
 
 @Composable
-fun PillButton(label: String, modifier: Modifier = Modifier, onClick: () -> Unit) {
+fun PillButton(label: String, modifier: Modifier = Modifier, selected: Boolean = false, onClick: () -> Unit) {
     val src = remember { MutableInteractionSource() }
     val isFocused by src.collectIsFocusedAsState()
     Box(
         modifier
             .clip(RoundedCornerShape(50))
-            .background(if (isFocused) TextMain else Color.White.copy(alpha = 0.10f))
+            .background(
+                when {
+                    isFocused -> TextMain
+                    selected -> Color.White.copy(alpha = 0.28f)
+                    else -> Color.White.copy(alpha = 0.10f)
+                }
+            )
             .clickable(interactionSource = src, indication = null) { onClick() }
             .padding(horizontal = 13.dp, vertical = 6.dp)
     ) {
@@ -1320,6 +1341,125 @@ private fun PosterCard(
             item.title, maxLines = 1, overflow = TextOverflow.Ellipsis,
             style = TextStyle(color = if (isFocused) TextMain else TextDim, fontSize = 10.sp)
         )
+    }
+}
+
+// ---------------------------------------------------------------- YouTube
+
+@Composable
+private fun YouTubeScreen(
+    yt: YouTubeRepo,
+    repo: PlexRepo,
+    resumeCount: Int,
+    focusState: MutableState<PlexItem?>,
+    onFocusItem: (PlexItem) -> Unit,
+    onRowFocused: (Int) -> Unit,
+    bridge: FocusBridge,
+    active: Boolean,
+    gridMode: Boolean
+) {
+    val context = LocalContext.current
+    var loggedIn by remember { mutableStateOf(yt.loggedIn) }
+    if (!loggedIn) {
+        YouTubeLogin(yt) { loggedIn = true }
+        return
+    }
+    var rows by remember { mutableStateOf(repo.loadRowsFile("youtube_rows.json")) }
+    var status by remember { mutableStateOf(if (rows.isEmpty()) "Lade YouTube …" else "") }
+    var lastLoad by remember { mutableLongStateOf(0L) }
+
+    LaunchedEffect(resumeCount) {
+        if (System.currentTimeMillis() - lastLoad < 30_000) return@LaunchedEffect
+        lastLoad = System.currentTimeMillis()
+        try {
+            val r = yt.loadRows()
+            if (r.isNotEmpty()) {
+                rows = r
+                status = ""
+                withContext(Dispatchers.IO) { repo.saveRowsFile("youtube_rows.json", r) }
+            } else if (rows.isEmpty()) {
+                status = "Keine Videos gefunden. Bitte später nochmals versuchen."
+            }
+        } catch (e: Exception) {
+            if (rows.isEmpty()) status = "YouTube konnte nicht geladen werden: ${e.message}"
+        }
+    }
+    // Beim Öffnen das erste Video als Hintergrund zeigen
+    LaunchedEffect(rows.isNotEmpty()) {
+        if (active) rows.firstOrNull()?.items?.firstOrNull()?.let { onFocusItem(it) }
+    }
+
+    StartScreen(
+        rows = rows,
+        status = status,
+        focusState = focusState,
+        onFocusItem = onFocusItem,
+        onRowFocused = onRowFocused,
+        openItem = { item, _ -> openYouTubeVideo(context, item.ratingKey) },
+        bridge = bridge,
+        active = active,
+        autoFocus = false,
+        onAutoFocused = {},
+        gridMode = gridMode
+    )
+}
+
+@Composable
+private fun YouTubeLogin(yt: YouTubeRepo, onDone: () -> Unit) {
+    var code by remember { mutableStateOf<String?>(null) }
+    var url by remember { mutableStateOf("google.com/device") }
+    var error by remember { mutableStateOf<String?>(null) }
+    var attempt by remember { mutableIntStateOf(0) }
+    LaunchedEffect(attempt) {
+        error = null
+        code = null
+        try {
+            val dc = yt.startLogin()
+            code = dc.userCode
+            url = dc.url.removePrefix("https://").removePrefix("www.")
+            val start = System.currentTimeMillis()
+            while (System.currentTimeMillis() - start < 15 * 60 * 1000) {
+                delay(dc.intervalSec * 1000L)
+                if (yt.pollLogin(dc)) {
+                    onDone()
+                    return@LaunchedEffect
+                }
+            }
+            error = "Der Code ist abgelaufen."
+        } catch (e: Exception) {
+            error = e.message ?: "Anmeldung fehlgeschlagen."
+        }
+    }
+    Column(
+        Modifier.fillMaxSize().padding(48.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        BasicText("Mit YouTube verbinden", style = TextStyle(color = TextMain, fontSize = 30.sp, fontWeight = FontWeight.Bold))
+        Spacer(Modifier.height(14.dp))
+        BasicText("Öffne auf dem Handy $url und gib diesen Code ein:", style = TextStyle(color = TextSoft, fontSize = 17.sp))
+        Spacer(Modifier.height(22.dp))
+        BasicText(code ?: "…", style = TextStyle(color = TextMain, fontSize = 48.sp, fontWeight = FontWeight.Bold, letterSpacing = 6.sp))
+        Spacer(Modifier.height(16.dp))
+        BasicText("Abgespielt wird anschliessend in SmartTube, ohne Werbung.", style = TextStyle(color = TextDim, fontSize = 13.sp))
+        error?.let {
+            Spacer(Modifier.height(20.dp))
+            BasicText(it, style = TextStyle(color = Color(0xFFFFB4A8), fontSize = 15.sp))
+            Spacer(Modifier.height(12.dp))
+            PillButton("Neuen Code anfordern") { attempt++ }
+        }
+    }
+}
+
+/** Öffnet ein Video direkt in SmartTube (sonst in der YouTube-App). */
+fun openYouTubeVideo(context: Context, videoId: String) {
+    val i = Intent(Intent.ACTION_VIEW, Uri.parse("https://www.youtube.com/watch?v=$videoId"))
+    i.setPackage(Updater.findSmartTube(context) ?: "com.google.android.youtube.tv")
+    i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    try {
+        context.startActivity(i)
+    } catch (e: Exception) {
+        Toast.makeText(context, "SmartTube konnte nicht geöffnet werden.", Toast.LENGTH_LONG).show()
     }
 }
 
