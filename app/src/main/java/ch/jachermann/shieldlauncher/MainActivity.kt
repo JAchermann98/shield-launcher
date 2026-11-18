@@ -718,13 +718,17 @@ fun Hero(focusState: MutableState<PlexItem?>, status: String, compact: Boolean =
         BasicText(status, style = TextStyle(color = TextSoft, fontSize = 16.sp))
         return
     }
+    // Überblenden nur beim Wechsel des Titels, nicht wenn Details (z. B. Qualität) nachgeladen werden
+    val byKey = remember { mutableStateMapOf<String, PlexItem>() }
+    val itemKey = "${item.serverId}/${item.ratingKey}"
+    byKey[itemKey] = item
     Crossfade(
-        targetState = item,
+        targetState = itemKey,
         animationSpec = tween(260),
         label = "hero",
-        modifier = Modifier.fillMaxSize(),
-        contentKey = { "${it.serverId}/${it.ratingKey}" }
-    ) { cur ->
+        modifier = Modifier.fillMaxSize()
+    ) { k ->
+        val cur = byKey[k] ?: item
         Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Bottom) {
             TitleOrLogo(cur, if (compact) 62.dp else 84.dp)
             if (cur.subtitle.isNotEmpty()) {
