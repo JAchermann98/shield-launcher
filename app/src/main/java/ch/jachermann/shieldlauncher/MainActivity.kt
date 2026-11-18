@@ -241,12 +241,13 @@ fun HomeRoot(repo: PlexRepo, resumeCount: Int, homeCount: Int) {
     val uiPrefs = remember { context.getSharedPreferences("launcher_ui", Context.MODE_PRIVATE) }
     var gridMovies by remember { mutableStateOf(uiPrefs.getBoolean("grid_movie", false)) }
     var gridShows by remember { mutableStateOf(uiPrefs.getBoolean("grid_show", false)) }
-    val gridMode = when (tab) { Tab.FILME -> gridMovies; Tab.SERIEN -> gridShows; else -> false }
+    var gridStart by remember { mutableStateOf(uiPrefs.getBoolean("grid_start", false)) }
+    val gridMode = when (tab) { Tab.FILME -> gridMovies; Tab.SERIEN -> gridShows; Tab.START -> gridStart }
     val toggleView: () -> Unit = {
         when (tab) {
             Tab.FILME -> { gridMovies = !gridMovies; uiPrefs.edit().putBoolean("grid_movie", gridMovies).apply() }
             Tab.SERIEN -> { gridShows = !gridShows; uiPrefs.edit().putBoolean("grid_show", gridShows).apply() }
-            else -> {}
+            Tab.START -> { gridStart = !gridStart; uiPrefs.edit().putBoolean("grid_start", gridStart).apply() }
         }
     }
     var lastTop by remember { mutableStateOf<String?>(null) }
@@ -362,7 +363,7 @@ fun HomeRoot(repo: PlexRepo, resumeCount: Int, homeCount: Int) {
     Box(
         Modifier.fillMaxSize().onPreviewKeyEvent { ev ->
             val ne = ev.nativeKeyEvent
-            if (ne.action == AndroidKeyEvent.ACTION_DOWN && ne.keyCode == AndroidKeyEvent.KEYCODE_MENU && tab != Tab.START) {
+            if (ne.action == AndroidKeyEvent.ACTION_DOWN && ne.keyCode == AndroidKeyEvent.KEYCODE_MENU) {
                 toggleView(); true
             } else false
         }
@@ -396,7 +397,8 @@ fun HomeRoot(repo: PlexRepo, resumeCount: Int, homeCount: Int) {
                     bridge = bridge,
                     active = active,
                     autoFocus = autoFocusStart,
-                    onAutoFocused = { autoFocusStart = false }
+                    onAutoFocused = { autoFocusStart = false },
+                    gridMode = gridStart
                 )
                 Tab.FILME -> LibraryScreen(repo, servers, "movie", "Alle Filme", focusState, onFocusItem, openItem, bridge, active, gridMovies) { libScrolled = it }
                 Tab.SERIEN -> LibraryScreen(repo, servers, "show", "Alle Serien", focusState, onFocusItem, openItem, bridge, active, gridShows) { libScrolled = it }
@@ -511,12 +513,10 @@ private fun TopBar(
         TabButton("Filme", tab == Tab.FILME, m("filme")) { onTab(Tab.FILME) }
         Spacer(Modifier.width(4.dp))
         TabButton("Serien", tab == Tab.SERIEN, m("serien")) { onTab(Tab.SERIEN) }
-        // Umschalter Bild-/Rasteransicht, nur bei Filme und Serien
-        if (tab != Tab.START) {
-            Spacer(Modifier.width(8.dp))
-            IconButton(dot = false, modifier = m("view"), onClick = onToggleView) { color ->
-                if (gridMode) ImageViewIcon(color) else GridIcon(color)
-            }
+        // Umschalter Bild-/Rasteransicht (für jede Seite getrennt gemerkt)
+        Spacer(Modifier.width(8.dp))
+        IconButton(dot = false, modifier = m("view"), onClick = onToggleView) { color ->
+            if (gridMode) ImageViewIcon(color) else GridIcon(color)
         }
         Spacer(Modifier.width(22.dp))
         Box(Modifier.width(1.dp).height(20.dp).background(Color.White.copy(alpha = 0.25f)))
@@ -672,8 +672,12 @@ private fun StartScreen(
     bridge: FocusBridge,
     active: Boolean,
     autoFocus: Boolean,
-    onAutoFocused: () -> Unit
+    onAutoFocused: () -> Unit,
+    gridMode: Boolean
 ) {
+    // Rasteransicht: Infos ausblenden, Zeilen rücken unter die Kopfzeile, mehrere Zeilen sichtbar
+    val focusY by animateDpAsState(if (gridMode) 76.dp else FOCUS_Y.dp, tween(480, easing = FastOutSlowInEasing), label = "focusY")
+    val heroAlpha by animateFloatAsState(if (gridMode) 0f else 1f, tween(300), label = "startHero")
     var focusedRow by remember { mutableIntStateOf(0) }
     var didInitialFocus by remember { mutableStateOf(false) }
     // Zuletzt gewählte Kachel je Zeile und die Fokus-Anker aller sichtbaren Kacheln
@@ -719,24 +723,28 @@ private fun StartScreen(
     ) {
         // Infos zum ausgewählten Titel, unten bündig über der aktiven Zeile
         Box(
-            Modifier.offset(x = 48.dp, y = 66.dp).width(470.dp).height((FOCUS_Y - 66 - 10).dp),
+            Modifier.offset(x = 48.dp, y = 66.dp).width(470.dp).height((FOCUS_Y - 66 - 10).dp)
+                .graphicsLayer { alpha = heroAlpha },
             contentAlignment = Alignment.BottomStart
         ) {
             Hero(focusState, status)
         }
 
         rows.forEachIndexed { i, row -> key(row.title) {
-            val target: Int = when {
-                i == focusedRow -> FOCUS_Y
-                i < focusedRow -> PREV_Y - ROW_STEP * (focusedRow - 1 - i)
-                else -> FOCUS_Y + ROW_STEP * (i - focusedRow)
+            // Lage relativ zur aktiven Zeile; die aktive Zeile selbst steht bei focusY
+            val rel: Int = when {
+                i == focusedRow -> 0
+                i < focusedRow -> (PREV_Y - FOCUS_Y) - ROW_STEP * (focusedRow - 1 - i)
+                else -> ROW_STEP * (i - focusedRow)
             }
-            val y by animateDpAsState(target.dp, tween(420, easing = FastOutSlowInEasing), label = "rowY$i")
+            val relY by animateDpAsState(rel.dp, tween(420, easing = FastOutSlowInEasing), label = "rowY$i")
+            val y = focusY + relY
             val alpha by animateFloatAsState(
                 when {
                     i == focusedRow -> 1f
-                    i == focusedRow - 1 -> 0.45f
+                    i == focusedRow - 1 -> if (gridMode) 0f else 0.45f
                     i == focusedRow + 1 -> 0.9f
+                    i == focusedRow + 2 && gridMode -> 0.85f
                     else -> 0f
                 },
                 tween(380),
