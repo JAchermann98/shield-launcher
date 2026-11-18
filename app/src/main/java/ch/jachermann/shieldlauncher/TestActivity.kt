@@ -262,15 +262,15 @@ class TestActivity : Activity() {
                 log("  Weiterschauen fehlgeschlagen: HTTP $dc")
                 continue
             }
-            val items = JSONObject(db).optJSONObject("MediaContainer")?.optJSONArray("Metadata") ?: JSONArray()
-            log("  Weiterschauen: ${items.length()} Einträge")
-            for (k in 0 until minOf(items.length(), 5)) {
-                val m = items.getJSONObject(k)
+            val deck = JSONObject(db).optJSONObject("MediaContainer")?.optJSONArray("Metadata") ?: JSONArray()
+            log("  Weiterschauen: ${deck.length()} Einträge")
+            for (k in 0 until minOf(deck.length(), 5)) {
+                val m = deck.getJSONObject(k)
                 val title = if (m.optString("type") == "episode") {
                     "${m.optString("grandparentTitle")} – ${m.optString("title")}"
                 } else m.optString("title")
                 log("   • $title  [${m.optString("type")}, ratingKey ${m.optString("ratingKey")}]")
-                items.add(Item(serverId, m.optString("ratingKey"), title, m.optString("type")))
+                this.items.add(Item(serverId, m.optString("ratingKey"), title, m.optString("type")))
                 if (!found) {
                     selServerId = serverId
                     selRatingKey = m.optString("ratingKey")
