@@ -86,6 +86,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
@@ -321,7 +322,7 @@ fun HomeRoot(repo: PlexRepo, resumeCount: Int, homeCount: Int) {
     val topAlpha by animateFloatAsState(if (topBarVisible) 1f else 0f, tween(300), label = "topAlpha")
 
     Box(Modifier.fillMaxSize()) {
-        Backdrop(focusState, dim = tab != Tab.START)
+        Backdrop(focusState, dim = false)
 
         // Weicher Seitenwechsel: neue Seite gleitet aus der Wechselrichtung herein und blendet auf,
         // die alte blendet zügig aus und rückt leicht zur Seite
@@ -352,8 +353,8 @@ fun HomeRoot(repo: PlexRepo, resumeCount: Int, homeCount: Int) {
                     autoFocus = autoFocusStart,
                     onAutoFocused = { autoFocusStart = false }
                 )
-                Tab.FILME -> LibraryScreen(repo, servers, "movie", "Alle Filme", onFocusItem, openItem, bridge, active) { libScrolled = it }
-                Tab.SERIEN -> LibraryScreen(repo, servers, "show", "Alle Serien", onFocusItem, openItem, bridge, active) { libScrolled = it }
+                Tab.FILME -> LibraryScreen(repo, servers, "movie", "Alle Filme", focusState, onFocusItem, openItem, bridge, active) { libScrolled = it }
+                Tab.SERIEN -> LibraryScreen(repo, servers, "show", "Alle Serien", focusState, onFocusItem, openItem, bridge, active) { libScrolled = it }
             }
         }
 
@@ -686,7 +687,7 @@ private fun StartScreen(
 // ---------------------------------------------------------------- Infos (Logo, Daten, Beschreibung)
 
 @Composable
-fun Hero(focusState: MutableState<PlexItem?>, status: String) {
+fun Hero(focusState: MutableState<PlexItem?>, status: String, compact: Boolean = false) {
     val item = focusState.value
     if (item == null) {
         BasicText(status, style = TextStyle(color = TextSoft, fontSize = 16.sp))
@@ -694,7 +695,7 @@ fun Hero(focusState: MutableState<PlexItem?>, status: String) {
     }
     Crossfade(targetState = item, animationSpec = tween(260), label = "hero", modifier = Modifier.fillMaxSize()) { cur ->
         Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Bottom) {
-            TitleOrLogo(cur)
+            TitleOrLogo(cur, if (compact) 62.dp else 84.dp)
             if (cur.subtitle.isNotEmpty()) {
                 Spacer(Modifier.height(4.dp))
                 BasicText(cur.subtitle, maxLines = 1, overflow = TextOverflow.Ellipsis, style = TextStyle(color = TextSoft, fontSize = 14.sp, fontWeight = FontWeight.SemiBold))
@@ -713,14 +714,14 @@ fun Hero(focusState: MutableState<PlexItem?>, status: String) {
             }
             if (cur.summary.isNotEmpty()) {
                 Spacer(Modifier.height(10.dp))
-                BasicText(cur.summary, maxLines = 3, overflow = TextOverflow.Ellipsis, style = TextStyle(color = TextSoft, fontSize = 13.sp, lineHeight = 18.sp))
+                BasicText(cur.summary, maxLines = if (compact) 1 else 3, overflow = TextOverflow.Ellipsis, style = TextStyle(color = TextSoft, fontSize = 13.sp, lineHeight = 18.sp))
             }
         }
     }
 }
 
 @Composable
-private fun TitleOrLogo(item: PlexItem) {
+private fun TitleOrLogo(item: PlexItem, height: Dp) {
     var logoFailed by remember(item.logoUrl) { mutableStateOf(item.logoUrl == null) }
     if (!logoFailed && item.logoUrl != null) {
         AsyncImage(
@@ -729,10 +730,10 @@ private fun TitleOrLogo(item: PlexItem) {
             contentScale = ContentScale.Fit,
             alignment = Alignment.CenterStart,
             onState = { if (it is AsyncImagePainter.State.Error) logoFailed = true },
-            modifier = Modifier.height(84.dp).widthIn(max = 340.dp).fillMaxWidth()
+            modifier = Modifier.height(height).widthIn(max = 340.dp).fillMaxWidth()
         )
     } else {
-        Box(Modifier.height(84.dp).fillMaxWidth(), contentAlignment = Alignment.BottomStart) {
+        Box(Modifier.height(height).fillMaxWidth(), contentAlignment = Alignment.BottomStart) {
             BasicText(
                 item.title, maxLines = 2, overflow = TextOverflow.Ellipsis,
                 style = TextStyle(color = TextMain, fontSize = 34.sp, fontWeight = FontWeight.Bold, lineHeight = 37.sp)
@@ -879,46 +880,29 @@ private fun LandscapeCard(
 
 // ---------------------------------------------------------------- Filme / Serien
 
+// Layout der Filme-/Serien-Seite (dp): oben Bild und Infos, unten das Fenster mit den Reihen
+private const val LIB_WINDOW_TOP = 232
+private const val LIB_STEP = 164
+private const val LIB_COLS = 9
+
 @Composable
 private fun LibraryScreen(
     repo: PlexRepo,
     servers: List<PlexServer>,
     type: String,
     allTitle: String,
+    focusState: MutableState<PlexItem?>,
     onFocusItem: (PlexItem) -> Unit,
     openItem: (PlexItem, Boolean) -> Unit,
     bridge: FocusBridge,
     active: Boolean,
     onScrolled: (Boolean) -> Unit
 ) {
-    var lastGridIdx by remember(type) { mutableIntStateOf(-1) }
-    var letterMode by remember(type) { mutableStateOf(false) }
-    val letterReqs = remember(type) { (listOf("#") + ('A'..'Z').map { it.toString() }).associateWith { FocusRequester() } }
     val scope = rememberCoroutineScope()
     val cached = remember(type) { repo.loadLibraryCache(type) }
     var newest by remember(type) { mutableStateOf(cached.first) }
     var all by remember(type) { mutableStateOf(cached.second) }
     var loading by remember(type) { mutableStateOf(all.isEmpty()) }
-    val gridState = rememberLazyGridState()
-    val firstFocus = remember(type) { FocusRequester() }
-    val requesters = remember(type) { mutableStateMapOf<Int, FocusRequester>() }
-    val pivot = rememberPivotSpec(8.dp)
-    val density = LocalDensity.current
-    // Solange die Neu-Zeile den Fokus hat, scrollt das Raster nicht selbst,
-    // sondern fährt komplett nach oben (siehe onFocusChanged der Neu-Zeile).
-    val newRowFocused = remember(type) { booleanArrayOf(false) }
-    val gridSpec = remember(density) {
-        val topPx = with(density) { 64.dp.toPx() }
-        val bottomPx = with(density) { 24.dp.toPx() }
-        object : BringIntoViewSpec {
-            override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float): Float = when {
-                newRowFocused[0] -> 0f
-                offset < topPx -> offset - topPx
-                offset + size > containerSize - bottomPx -> offset + size - (containerSize - bottomPx)
-                else -> 0f
-            }
-        }
-    }
 
     LaunchedEffect(type, servers) {
         if (servers.isEmpty()) return@LaunchedEffect
@@ -933,140 +917,171 @@ private fun LibraryScreen(
         }
         loading = false
     }
-    // Kein automatischer Fokus: die Auswahl bleibt im Reiter, bis man selbst nach unten drückt
 
-    LaunchedEffect(gridState) {
-        // Kopfzeile ausblenden, sobald überhaupt gescrollt ist, sonst liegt sie über der Neu-Zeile
-        snapshotFlow { gridState.firstVisibleItemIndex > 0 || gridState.firstVisibleItemScrollOffset > 0 }
-            .distinctUntilChanged()
-            .collect { onScrolled(it) }
+    // Beim Öffnen gleich ein passendes Bild zeigen (ohne die Auswahl aus dem Reiter zu holen)
+    LaunchedEffect(type, newest.isNotEmpty() || all.isNotEmpty()) {
+        if (active) (newest.firstOrNull() ?: all.firstOrNull())?.let { onFocusItem(it) }
     }
 
-    val letters = remember(all) { listOf("#") + ('A'..'Z').map { it.toString() } }
-    val headerCount = 2
+    val hasNew = newest.isNotEmpty()
+    val offsetRows = if (hasNew) 1 else 0
+    val posterRows = (all.size + LIB_COLS - 1) / LIB_COLS
+    val rowCount = offsetRows + posterRows
 
-    val spacingPx = with(density) { 16.dp.toPx() }
+    var focusedRow by remember(type) { mutableIntStateOf(0) }
+    var lastNeu by remember(type) { mutableIntStateOf(0) }
+    var lastCol by remember(type) { mutableIntStateOf(0) }
+    var letterMode by remember(type) { mutableStateOf(false) }
+    val letters = remember { listOf("#") + ('A'..'Z').map { it.toString() } }
+    val letterReqs = remember(type) { letters.associateWith { FocusRequester() } }
+    val neuReqs = remember(type) { mutableMapOf<Int, FocusRequester>() }
+    val posterReqs = remember(type) { mutableMapOf<Int, FocusRequester>() }
 
-    /** Im Raster genau eine Reihe hoch/runter, in derselben Spalte bleiben. */
-    fun moveGrid(from: Int, delta: Int): Boolean {
-        var t = from + delta
-        if (t < 0) return false
-        if (t >= all.size) {
-            val lastRow = (all.size - 1) / 7
-            if (from / 7 < lastRow) t = all.size - 1 else return true
-        }
-        val fr = requesters[t]
-        if (fr != null) {
-            try { fr.requestFocus() } catch (e: Exception) { }
-        } else {
-            scope.launch {
-                val info = gridState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == from + 2 }
-                val step = (info?.size?.height ?: 300) + spacingPx
-                gridState.animateScrollBy(if (delta > 0) step else -step)
-                delay(16)
-                try { requesters[t]?.requestFocus() } catch (e: Exception) { }
+    LaunchedEffect(focusedRow) { onScrolled(focusedRow > 0) }
+
+    /** Reihe anwählen: Fenster gleitet hin, Auswahl bleibt in derselben Spalte. */
+    fun focusRow(row: Int) {
+        if (rowCount == 0) return
+        val r = row.coerceIn(0, rowCount - 1)
+        focusedRow = r
+        scope.launch {
+            delay(40) // eine Bildschirm-Aktualisierung abwarten, bis die Reihe da ist
+            val fr = if (hasNew && r == 0) {
+                neuReqs[lastNeu] ?: neuReqs.entries.minByOrNull { it.key }?.value
+            } else {
+                val pr = r - offsetRows
+                val idx = (pr * LIB_COLS + lastCol).coerceAtMost(all.size - 1)
+                posterReqs[idx]
             }
+            try { fr?.requestFocus() } catch (e: Exception) { }
         }
-        return true
     }
 
-    fun focusGrid() {
-        val fr = requesters[lastGridIdx]
-            ?: requesters.keys.minOrNull()?.let { requesters[it] }
-        try { if (fr != null) fr.requestFocus() else firstFocus.requestFocus() } catch (e: Exception) { }
-    }
-    if (active) bridge.toContent = { if (lastGridIdx >= 0 && requesters[lastGridIdx] != null) focusGrid() else try { firstFocus.requestFocus() } catch (e: Exception) { } }
+    if (active) bridge.toContent = { focusRow(focusedRow) }
 
     Box(Modifier.fillMaxSize()) {
-        CompositionLocalProvider(LocalBringIntoViewSpec provides gridSpec) {
-        LazyVerticalGrid(
-            columns = GridCells.Fixed(7),
-            state = gridState,
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(start = 48.dp, end = 64.dp, top = 70.dp, bottom = 48.dp),
-            horizontalArrangement = Arrangement.spacedBy(14.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+        // Untere Hälfte dunkler, damit die Poster gut lesbar sind
+        Box(
+            Modifier.fillMaxSize().padding(top = (LIB_WINDOW_TOP - 60).dp).background(
+                Brush.verticalGradient(0f to Color.Transparent, 0.25f to Bg.copy(alpha = 0.7f), 1f to Bg.copy(alpha = 0.92f))
+            )
+        )
+
+        // Infos zum ausgewählten Titel
+        Box(
+            Modifier.offset(x = 48.dp, y = 62.dp).width(470.dp).height((LIB_WINDOW_TOP - 62 - 12).dp),
+            contentAlignment = Alignment.BottomStart
         ) {
-            item(span = { GridItemSpan(maxLineSpan) }) {
-                Column(
-                    Modifier
-                        .onFocusChanged {
-                            newRowFocused[0] = it.hasFocus
-                            if (it.hasFocus && (gridState.firstVisibleItemIndex > 0 || gridState.firstVisibleItemScrollOffset > 0)) {
-                                scope.launch { gridState.animateScrollToItem(0) }
-                            }
+            Hero(focusState, if (loading) "Lade Mediathek …" else "", compact = true)
+        }
+
+        // Fenster mit den Reihen
+        Box(
+            Modifier
+                .fillMaxSize()
+                .padding(top = LIB_WINDOW_TOP.dp)
+                .clipToBounds()
+                .onPreviewKeyEvent { ev ->
+                    val ne = ev.nativeKeyEvent
+                    if (ne.action != AndroidKeyEvent.ACTION_DOWN) return@onPreviewKeyEvent false
+                    when (ne.keyCode) {
+                        AndroidKeyEvent.KEYCODE_DPAD_UP -> {
+                            if (focusedRow == 0) bridge.toTop() else focusRow(focusedRow - 1)
+                            true
                         }
-                        .onPreviewKeyEvent { ev ->
-                            val ne = ev.nativeKeyEvent
-                            if (ne.action == AndroidKeyEvent.ACTION_DOWN && ne.keyCode == AndroidKeyEvent.KEYCODE_DPAD_UP) { bridge.toTop(); true } else false
+                        AndroidKeyEvent.KEYCODE_DPAD_DOWN -> {
+                            if (focusedRow < rowCount - 1) focusRow(focusedRow + 1)
+                            true
                         }
-                ) {
-                    BasicText("Neu", style = TextStyle(color = TextMain, fontSize = 15.sp, fontWeight = FontWeight.Bold))
-                    Spacer(Modifier.height(4.dp))
-                    CompositionLocalProvider(LocalBringIntoViewSpec provides pivot) {
-                        LazyRow(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            contentPadding = PaddingValues(start = 8.dp, end = 600.dp, top = 8.dp, bottom = 6.dp)
-                        ) {
-                            itemsIndexed(newest, key = { i, it -> "n/${it.serverId}/${it.ratingKey}/$i" }) { index, item ->
-                                LandscapeCard(
-                                    item = item,
-                                    modifier = if (index == 0) Modifier.focusRequester(firstFocus) else Modifier,
-                                    onFocus = onFocusItem,
-                                    onClick = { openItem(it, false) },
-                                    onLongClick = { openItem(it, true) }
-                                )
+                        else -> false
+                    }
+                }
+        ) {
+            if (rowCount > 0) {
+                val from = (focusedRow - 2).coerceAtLeast(0)
+                val to = (focusedRow + 3).coerceAtMost(rowCount - 1)
+                for (r in from..to) key(type, r) {
+                    val target = 6 + (r - focusedRow) * LIB_STEP
+                    val y by animateDpAsState(target.dp, tween(420, easing = FastOutSlowInEasing), label = "libY")
+                    val a by animateFloatAsState(
+                        when {
+                            r < focusedRow -> 0f
+                            r == focusedRow -> 1f
+                            else -> 0.85f
+                        },
+                        tween(380),
+                        label = "libA"
+                    )
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .offset { IntOffset(0, y.roundToPx()) }
+                            .graphicsLayer { alpha = a }
+                    ) {
+                        if (hasNew && r == 0) {
+                            NewRow(newest, neuReqs, onFocus = { item, i ->
+                                lastNeu = i
+                                if (focusedRow != 0) focusedRow = 0
+                                onFocusItem(item)
+                            }, openItem = openItem)
+                        } else {
+                            val pr = r - offsetRows
+                            Column(Modifier.padding(start = 48.dp, end = 64.dp)) {
+                                if (pr == 0) {
+                                    Row(verticalAlignment = Alignment.Bottom) {
+                                        BasicText(allTitle, style = TextStyle(color = TextMain, fontSize = 15.sp, fontWeight = FontWeight.Bold))
+                                        Spacer(Modifier.width(10.dp))
+                                        BasicText("${all.size} Titel", style = TextStyle(color = TextDim, fontSize = 12.sp))
+                                    }
+                                    Spacer(Modifier.height(6.dp))
+                                }
+                                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    for (c in 0 until LIB_COLS) {
+                                        val idx = pr * LIB_COLS + c
+                                        if (idx < all.size) {
+                                            val item = all[idx]
+                                            val fr = remember(idx) { FocusRequester() }
+                                            DisposableEffect(idx) {
+                                                posterReqs[idx] = fr
+                                                onDispose { posterReqs.remove(idx) }
+                                            }
+                                            PosterCard(
+                                                item = item,
+                                                modifier = Modifier.weight(1f).focusRequester(fr).onPreviewKeyEvent { ev ->
+                                                    val ne = ev.nativeKeyEvent
+                                                    val atEnd = c == LIB_COLS - 1 || idx == all.size - 1
+                                                    if (ne.action == AndroidKeyEvent.ACTION_DOWN && ne.keyCode == AndroidKeyEvent.KEYCODE_DPAD_RIGHT && atEnd) {
+                                                        letterMode = true
+                                                        scope.launch {
+                                                            delay(30)
+                                                            try { letterReqs[item.letter]?.requestFocus() } catch (e: Exception) { }
+                                                        }
+                                                        true
+                                                    } else false
+                                                },
+                                                onFocus = {
+                                                    lastCol = c
+                                                    if (focusedRow != r) focusedRow = r
+                                                    onFocusItem(it)
+                                                },
+                                                onClick = { openItem(it, false) },
+                                                onLongClick = { openItem(it, true) }
+                                            )
+                                        } else {
+                                            Spacer(Modifier.weight(1f))
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
                 }
             }
-            item(span = { GridItemSpan(maxLineSpan) }) {
-                Row(verticalAlignment = Alignment.Bottom) {
-                    BasicText(allTitle, style = TextStyle(color = TextMain, fontSize = 15.sp, fontWeight = FontWeight.Bold))
-                    Spacer(Modifier.width(10.dp))
-                    BasicText(
-                        if (loading && all.isEmpty()) "wird geladen …" else "${all.size} Titel",
-                        style = TextStyle(color = TextDim, fontSize = 12.sp)
-                    )
-                }
-            }
-            itemsIndexed(all, key = { i, it -> "a/${it.serverId}/${it.ratingKey}/$i" }) { index, item ->
-                val fr = remember { FocusRequester() }
-                DisposableEffect(index) {
-                    requesters[index] = fr
-                    onDispose { requesters.remove(index) }
-                }
-                PosterCard(
-                    item = item,
-                    modifier = Modifier.focusRequester(fr).onPreviewKeyEvent { ev ->
-                        val ne = ev.nativeKeyEvent
-                        if (ne.action != AndroidKeyEvent.ACTION_DOWN) return@onPreviewKeyEvent false
-                        when (ne.keyCode) {
-                            AndroidKeyEvent.KEYCODE_DPAD_RIGHT -> if (index % 7 == 6) {
-                                letterMode = true
-                                scope.launch {
-                                    delay(30)
-                                    try { letterReqs[item.letter]?.requestFocus() } catch (e: Exception) { }
-                                }
-                                true
-                            } else false
-                            AndroidKeyEvent.KEYCODE_DPAD_DOWN -> moveGrid(index, 7)
-                            AndroidKeyEvent.KEYCODE_DPAD_UP -> if (index >= 7) moveGrid(index, -7) else false
-                            else -> false
-                        }
-                    },
-                    onFocus = { lastGridIdx = index; onFocusItem(it) },
-                    onClick = { openItem(it, false) },
-                    onLongClick = { openItem(it, true) }
-                )
-            }
-        }
         }
 
-        // A–Z-Leiste
+        // A–Z-Leiste: nur über "rechts" aus der letzten Spalte erreichbar
         Column(
-            Modifier.align(Alignment.CenterEnd).padding(end = 14.dp, top = 60.dp),
+            Modifier.align(Alignment.TopEnd).padding(end = 14.dp, top = 70.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             letters.forEach { l ->
@@ -1078,7 +1093,7 @@ private fun LibraryScreen(
                         .onPreviewKeyEvent { ev ->
                             val ne = ev.nativeKeyEvent
                             if (ne.action == AndroidKeyEvent.ACTION_DOWN && ne.keyCode == AndroidKeyEvent.KEYCODE_DPAD_LEFT) {
-                                focusGrid()
+                                focusRow(focusedRow)
                                 letterMode = false
                                 true
                             } else false
@@ -1086,13 +1101,44 @@ private fun LibraryScreen(
                 ) {
                     val idx = all.indexOfFirst { it.letter == l }
                     if (idx >= 0) {
-                        scope.launch {
-                            gridState.scrollToItem(idx + headerCount)
-                            delay(80)
-                            try { requesters[idx]?.requestFocus() } catch (e: Exception) { }
-                            letterMode = false
-                        }
+                        lastCol = idx % LIB_COLS
+                        focusRow(offsetRows + idx / LIB_COLS)
+                        letterMode = false
                     }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun NewRow(
+    items: List<PlexItem>,
+    requesters: MutableMap<Int, FocusRequester>,
+    onFocus: (PlexItem, Int) -> Unit,
+    openItem: (PlexItem, Boolean) -> Unit
+) {
+    val pivot = rememberPivotSpec(118.dp)
+    Column(Modifier.fillMaxWidth()) {
+        BasicText("Neu", modifier = Modifier.padding(start = 48.dp), style = TextStyle(color = TextMain, fontSize = 15.sp, fontWeight = FontWeight.Bold))
+        CompositionLocalProvider(LocalBringIntoViewSpec provides pivot) {
+            LazyRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                contentPadding = PaddingValues(start = 44.dp, end = 600.dp, top = 4.dp, bottom = 2.dp)
+            ) {
+                itemsIndexed(items, key = { i, it -> "n/${it.serverId}/${it.ratingKey}/$i" }) { index, item ->
+                    val fr = remember { FocusRequester() }
+                    DisposableEffect(index) {
+                        requesters[index] = fr
+                        onDispose { requesters.remove(index) }
+                    }
+                    LandscapeCard(
+                        item = item,
+                        modifier = Modifier.focusRequester(fr),
+                        onFocus = { onFocus(it, index) },
+                        onClick = { openItem(it, false) },
+                        onLongClick = { openItem(it, true) }
+                    )
                 }
             }
         }
