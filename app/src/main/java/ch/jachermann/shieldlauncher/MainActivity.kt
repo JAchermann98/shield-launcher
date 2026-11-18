@@ -132,13 +132,20 @@ private const val PREV_Y = -118
 class MainActivity : ComponentActivity() {
 
     private var resumeCount by mutableIntStateOf(0)
+    private var homeCount by mutableIntStateOf(0)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val repo = PlexRepo(this)
         setContent {
-            LauncherApp(repo, resumeCount)
+            LauncherApp(repo, resumeCount, homeCount)
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        // Home-Taste, während der Launcher schon offen ist
+        if (intent.hasCategory(Intent.CATEGORY_HOME)) homeCount++
     }
 
     override fun onResume() {
@@ -150,13 +157,13 @@ class MainActivity : ComponentActivity() {
 // ---------------------------------------------------------------- App
 
 @Composable
-fun LauncherApp(repo: PlexRepo, resumeCount: Int) {
+fun LauncherApp(repo: PlexRepo, resumeCount: Int, homeCount: Int) {
     var loggedIn by remember { mutableStateOf(repo.userToken != null) }
     Box(Modifier.fillMaxSize().background(Bg)) {
         if (!loggedIn) {
             LoginScreen(repo) { loggedIn = true }
         } else {
-            HomeRoot(repo, resumeCount)
+            HomeRoot(repo, resumeCount, homeCount)
         }
     }
 }
@@ -204,7 +211,7 @@ fun LoginScreen(repo: PlexRepo, onDone: () -> Unit) {
 // ---------------------------------------------------------------- Rahmen mit Kopfzeile und Seiten
 
 @Composable
-fun HomeRoot(repo: PlexRepo, resumeCount: Int) {
+fun HomeRoot(repo: PlexRepo, resumeCount: Int, homeCount: Int) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
@@ -223,6 +230,18 @@ fun HomeRoot(repo: PlexRepo, resumeCount: Int) {
     bridge.toTop = {
         val k = lastTop ?: when (tab) { Tab.START -> "start"; Tab.FILME -> "filme"; Tab.SERIEN -> "serien" }
         try { topReq[k]?.requestFocus() } catch (e: Exception) { }
+    }
+
+    LaunchedEffect(homeCount) {
+        if (homeCount > 0) {
+            showApps = false
+            if (tab != Tab.START) {
+                tab = Tab.START
+                focusedRow = 0
+                libScrolled = false
+                lastTop = null
+            }
+        }
     }
 
     BackHandler(enabled = true) {
@@ -932,10 +951,14 @@ private fun LibraryScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             item(span = { GridItemSpan(maxLineSpan) }) {
-                Column(Modifier.onPreviewKeyEvent { ev ->
-                    val ne = ev.nativeKeyEvent
-                    if (ne.action == AndroidKeyEvent.ACTION_DOWN && ne.keyCode == AndroidKeyEvent.KEYCODE_DPAD_UP) { bridge.toTop(); true } else false
-                }) {
+                Column(
+                    Modifier
+                        .onFocusChanged { if (it.hasFocus && gridState.firstVisibleItemIndex > 0 || it.hasFocus && gridState.firstVisibleItemScrollOffset > 0) scope.launch { gridState.animateScrollToItem(0) } }
+                        .onPreviewKeyEvent { ev ->
+                            val ne = ev.nativeKeyEvent
+                            if (ne.action == AndroidKeyEvent.ACTION_DOWN && ne.keyCode == AndroidKeyEvent.KEYCODE_DPAD_UP) { bridge.toTop(); true } else false
+                        }
+                ) {
                     BasicText("Neu", style = TextStyle(color = TextMain, fontSize = 15.sp, fontWeight = FontWeight.Bold))
                     Spacer(Modifier.height(4.dp))
                     CompositionLocalProvider(LocalBringIntoViewSpec provides pivot) {
