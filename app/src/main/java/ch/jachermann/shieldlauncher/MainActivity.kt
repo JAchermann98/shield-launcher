@@ -20,7 +20,14 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.Crossfade
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
@@ -228,6 +235,8 @@ fun HomeRoot(repo: PlexRepo, resumeCount: Int, homeCount: Int) {
     val bridge = remember { FocusBridge() }
     val topReq = remember { listOf("plex", "yt", "apps", "start", "filme", "serien", "update", "settings").associateWith { FocusRequester() } }
     var lastTop by remember { mutableStateOf<String?>(null) }
+    // Nur beim Start der App bzw. nach der Home-Taste springt die Auswahl automatisch in die Zeilen
+    var autoFocusStart by remember { mutableStateOf(true) }
     bridge.toTop = {
         val k = lastTop ?: when (tab) { Tab.START -> "start"; Tab.FILME -> "filme"; Tab.SERIEN -> "serien" }
         try { topReq[k]?.requestFocus() } catch (e: Exception) { }
@@ -236,6 +245,7 @@ fun HomeRoot(repo: PlexRepo, resumeCount: Int, homeCount: Int) {
     LaunchedEffect(homeCount) {
         if (homeCount > 0) {
             showApps = false
+            autoFocusStart = true
             if (tab != Tab.START) {
                 tab = Tab.START
                 focusedRow = 0
@@ -313,18 +323,38 @@ fun HomeRoot(repo: PlexRepo, resumeCount: Int, homeCount: Int) {
     Box(Modifier.fillMaxSize()) {
         Backdrop(focusState, dim = tab != Tab.START)
 
-        when (tab) {
-            Tab.START -> StartScreen(
-                rows = rows,
-                status = status,
-                focusState = focusState,
-                onFocusItem = onFocusItem,
-                onRowFocused = { focusedRow = it },
-                openItem = openItem,
-                bridge = bridge
-            )
-            Tab.FILME -> LibraryScreen(repo, servers, "movie", "Alle Filme", onFocusItem, openItem, bridge) { libScrolled = it }
-            Tab.SERIEN -> LibraryScreen(repo, servers, "show", "Alle Serien", onFocusItem, openItem, bridge) { libScrolled = it }
+        // Weicher Seitenwechsel: neue Seite gleitet aus der Wechselrichtung herein und blendet auf,
+        // die alte blendet zügig aus und rückt leicht zur Seite
+        AnimatedContent(
+            targetState = tab,
+            transitionSpec = {
+                val dir = if (targetState.ordinal > initialState.ordinal) 1 else -1
+                val enter = fadeIn(tween(380, delayMillis = 80, easing = FastOutSlowInEasing)) +
+                    slideInHorizontally(tween(460, easing = FastOutSlowInEasing)) { w -> dir * w / 10 } +
+                    scaleIn(tween(460, easing = FastOutSlowInEasing), initialScale = 0.985f)
+                val exit = fadeOut(tween(220, easing = FastOutSlowInEasing)) +
+                    slideOutHorizontally(tween(320, easing = FastOutSlowInEasing)) { w -> -dir * w / 16 }
+                enter togetherWith exit
+            },
+            label = "tabs"
+        ) { t ->
+            val active = t == tab
+            when (t) {
+                Tab.START -> StartScreen(
+                    rows = rows,
+                    status = status,
+                    focusState = focusState,
+                    onFocusItem = onFocusItem,
+                    onRowFocused = { focusedRow = it },
+                    openItem = openItem,
+                    bridge = bridge,
+                    active = active,
+                    autoFocus = autoFocusStart,
+                    onAutoFocused = { autoFocusStart = false }
+                )
+                Tab.FILME -> LibraryScreen(repo, servers, "movie", "Alle Filme", onFocusItem, openItem, bridge, active) { libScrolled = it }
+                Tab.SERIEN -> LibraryScreen(repo, servers, "show", "Alle Serien", onFocusItem, openItem, bridge, active) { libScrolled = it }
+            }
         }
 
         Box(
@@ -556,7 +586,10 @@ private fun StartScreen(
     onFocusItem: (PlexItem) -> Unit,
     onRowFocused: (Int) -> Unit,
     openItem: (PlexItem, Boolean) -> Unit,
-    bridge: FocusBridge
+    bridge: FocusBridge,
+    active: Boolean,
+    autoFocus: Boolean,
+    onAutoFocused: () -> Unit
 ) {
     var focusedRow by remember { mutableIntStateOf(0) }
     var didInitialFocus by remember { mutableStateOf(false) }
@@ -571,13 +604,14 @@ private fun StartScreen(
         try { fr?.requestFocus() } catch (e: Exception) { }
     }
 
-    bridge.toContent = { focusRow(focusedRow) }
+    if (active) bridge.toContent = { focusRow(focusedRow) }
 
-    LaunchedEffect(rows.isNotEmpty()) {
-        if (rows.isNotEmpty() && !didInitialFocus) {
+    LaunchedEffect(rows.isNotEmpty(), autoFocus) {
+        if (rows.isNotEmpty() && active && autoFocus) {
             delay(150)
             focusRow(0)
             didInitialFocus = true
+            onAutoFocused()
         }
     }
 
@@ -854,6 +888,7 @@ private fun LibraryScreen(
     onFocusItem: (PlexItem) -> Unit,
     openItem: (PlexItem, Boolean) -> Unit,
     bridge: FocusBridge,
+    active: Boolean,
     onScrolled: (Boolean) -> Unit
 ) {
     var lastGridIdx by remember(type) { mutableIntStateOf(-1) }
@@ -940,7 +975,7 @@ private fun LibraryScreen(
             ?: requesters.keys.minOrNull()?.let { requesters[it] }
         try { if (fr != null) fr.requestFocus() else firstFocus.requestFocus() } catch (e: Exception) { }
     }
-    bridge.toContent = { if (lastGridIdx >= 0 && requesters[lastGridIdx] != null) focusGrid() else try { firstFocus.requestFocus() } catch (e: Exception) { } }
+    if (active) bridge.toContent = { if (lastGridIdx >= 0 && requesters[lastGridIdx] != null) focusGrid() else try { firstFocus.requestFocus() } catch (e: Exception) { } }
 
     Box(Modifier.fillMaxSize()) {
         CompositionLocalProvider(LocalBringIntoViewSpec provides gridSpec) {
