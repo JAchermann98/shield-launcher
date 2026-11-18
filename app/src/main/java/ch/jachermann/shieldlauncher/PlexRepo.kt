@@ -6,9 +6,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
+import java.util.Locale
 import java.util.UUID
 
 /** Ein Titel, wie ihn der Launcher anzeigt. */
@@ -29,10 +31,23 @@ data class PlexItem(
     val audio: String,
     val summary: String,
     val guid: String? = null,
-    val fromWatchlist: Boolean = false
+    val fromWatchlist: Boolean = false,
+    val logoUrl: String? = null,
+    val contentRating: String = "",
+    val genres: String = "",
+    val rating: String = "",
+    val titleSort: String = "",
+    val addedAt: Long = 0
 ) {
     val progress: Float
         get() = if (durationMs > 0 && viewOffsetMs > 0) (viewOffsetMs.toFloat() / durationMs).coerceIn(0f, 1f) else 0f
+
+    /** Anfangsbuchstabe für die A–Z-Leiste. */
+    val letter: String
+        get() {
+            val c = (titleSort.ifEmpty { title }).trim().firstOrNull()?.uppercaseChar() ?: '#'
+            return if (c in 'A'..'Z') c.toString() else "#"
+        }
 }
 
 @Immutable
@@ -43,6 +58,7 @@ data class PlexServer(val id: String, val name: String, val base: String, val to
 class PlexRepo(context: Context) {
 
     private val prefs = context.getSharedPreferences("launcher_test", Context.MODE_PRIVATE)
+    private val filesDir = context.filesDir
 
     val clientId: String
         get() {
@@ -60,7 +76,7 @@ class PlexRepo(context: Context) {
         val h = mutableMapOf(
             "Accept" to "application/json",
             "X-Plex-Product" to "Shield Launcher",
-            "X-Plex-Version" to "0.2",
+            "X-Plex-Version" to "0.4",
             "X-Plex-Client-Identifier" to clientId,
             "X-Plex-Platform" to "Android",
             "X-Plex-Device" to "SHIELD Android TV",
@@ -70,11 +86,11 @@ class PlexRepo(context: Context) {
         return h
     }
 
-    private fun http(method: String, url: String, headers: Map<String, String>, timeoutMs: Int = 10000): Pair<Int, String> {
+    private fun http(method: String, url: String, headers: Map<String, String>, timeoutMs: Int = 15000): Pair<Int, String> {
         val conn = URL(url).openConnection() as HttpURLConnection
         conn.requestMethod = method
         conn.connectTimeout = timeoutMs
-        conn.readTimeout = timeoutMs
+        conn.readTimeout = timeoutMs * 2
         headers.forEach { (k, v) -> conn.setRequestProperty(k, v) }
         if (method == "POST") {
             conn.doOutput = true
@@ -91,7 +107,6 @@ class PlexRepo(context: Context) {
 
     // ---------- Anmeldung ----------
 
-    /** Liefert (pinId, code) für plex.tv/link. */
     suspend fun createPin(): Pair<Long, String> = withContext(Dispatchers.IO) {
         val (code, body) = http("POST", "https://plex.tv/api/v2/pins", headers())
         if (code !in 200..299) throw IllegalStateException("PIN-Anfrage fehlgeschlagen ($code)")
@@ -99,7 +114,6 @@ class PlexRepo(context: Context) {
         Pair(o.getLong("id"), o.getString("code"))
     }
 
-    /** true, sobald der Code bestätigt wurde. */
     suspend fun checkPin(pinId: Long): Boolean = withContext(Dispatchers.IO) {
         val (code, body) = http("GET", "https://plex.tv/api/v2/pins/$pinId", headers())
         if (code !in 200..299) return@withContext false
@@ -144,12 +158,13 @@ class PlexRepo(context: Context) {
         out
     }
 
-    // ---------- Inhalte ----------
+    // ---------- Umwandlung ----------
 
-    private fun img(s: PlexServer, path: String, w: Int, h: Int): String? {
+    private fun img(s: PlexServer, path: String, w: Int, h: Int, png: Boolean = false): String? {
         if (path.isEmpty()) return null
         if (path.startsWith("http")) return path
-        return "${s.base}/photo/:/transcode?width=$w&height=$h&minSize=1&upscale=1&url=${enc(path)}&X-Plex-Token=${s.token}"
+        val fmt = if (png) "&format=png" else ""
+        return "${s.base}/photo/:/transcode?width=$w&height=$h&minSize=1&upscale=1$fmt&url=${enc(path)}&X-Plex-Token=${s.token}"
     }
 
     private fun audioLabel(codec: String, channels: Int): String {
@@ -171,6 +186,20 @@ class PlexRepo(context: Context) {
         return (name + ch).trim()
     }
 
+    private fun tags(m: JSONObject, key: String, max: Int): String {
+        val arr = m.optJSONArray(key) ?: return ""
+        return (0 until minOf(arr.length(), max)).mapNotNull { arr.optJSONObject(it)?.optString("tag") }.joinToString(", ")
+    }
+
+    private fun logoPath(m: JSONObject): String {
+        val arr = m.optJSONArray("Image") ?: return ""
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            if (o.optString("type") == "clearLogo") return o.optString("url")
+        }
+        return ""
+    }
+
     private fun parse(s: PlexServer, m: JSONObject): PlexItem {
         val type = m.optString("type")
         val title = when (type) {
@@ -189,20 +218,22 @@ class PlexRepo(context: Context) {
             "season" -> m.optString("thumb").ifEmpty { m.optString("parentThumb") }
             else -> m.optString("thumb")
         }
-        val landscape = if (type == "episode") m.optString("thumb") else m.optString("art")
         val backdrop = when (type) {
             "episode", "season" -> m.optString("grandparentArt").ifEmpty { m.optString("art") }
             else -> m.optString("art")
         }
+        val landscape = if (type == "episode") m.optString("thumb").ifEmpty { backdrop } else backdrop.ifEmpty { m.optString("thumb") }
         val media = m.optJSONArray("Media")?.optJSONObject(0)
         val res = when (media?.optString("videoResolution")?.lowercase()) {
             "4k" -> "4K"
-            "1080" -> "HD"
-            "720" -> "HD"
+            "1080", "720" -> "HD"
             null, "" -> ""
             else -> "SD"
         }
         val audio = if (media != null) audioLabel(media.optString("audioCodec"), media.optInt("audioChannels")) else ""
+        val rating = m.optDouble("audienceRating", m.optDouble("rating", 0.0)).let {
+            if (it > 0) String.format(Locale.GERMANY, "%.1f", it) else ""
+        }
         return PlexItem(
             serverId = s.id,
             ratingKey = m.optString("ratingKey"),
@@ -212,68 +243,120 @@ class PlexRepo(context: Context) {
             year = year,
             durationMs = m.optLong("duration"),
             viewOffsetMs = m.optLong("viewOffset"),
-            posterUrl = img(s, poster, 240, 360),
-            landscapeUrl = img(s, landscape.ifEmpty { backdrop }, 400, 225),
+            posterUrl = img(s, poster, 220, 330),
+            landscapeUrl = img(s, landscape, 400, 225),
             backdropUrl = img(s, backdrop, 1280, 720),
             resolution = res,
             audio = audio,
             summary = m.optString("summary"),
-            guid = m.optString("guid")
+            guid = m.optString("guid"),
+            logoUrl = img(s, logoPath(m), 600, 200, png = true),
+            contentRating = m.optString("contentRating").substringAfterLast('/'),
+            genres = tags(m, "Genre", 2),
+            rating = rating,
+            titleSort = m.optString("titleSort").ifEmpty { title },
+            addedAt = m.optLong("addedAt")
         )
     }
 
-    private fun list(s: PlexServer, path: String): List<PlexItem> {
+    private fun list(s: PlexServer, path: String, size: Int = 30): List<PlexItem> {
         val sep = if (path.contains("?")) "&" else "?"
-        val (code, body) = http("GET", "${s.base}$path${sep}X-Plex-Container-Start=0&X-Plex-Container-Size=30", headers(s.token))
+        val (code, body) = http("GET", "${s.base}$path${sep}X-Plex-Container-Start=0&X-Plex-Container-Size=$size&includeImages=1", headers(s.token))
         if (code !in 200..299) return emptyList()
         val arr = JSONObject(body).optJSONObject("MediaContainer")?.optJSONArray("Metadata") ?: return emptyList()
         return (0 until arr.length()).map { parse(s, arr.getJSONObject(it)) }
     }
 
-    /** Lädt alle Zeilen des Startbildschirms. */
+    private data class Section(val server: PlexServer, val key: String, val title: String, val type: String)
+
+    private fun sections(servers: List<PlexServer>): List<Section> {
+        val out = mutableListOf<Section>()
+        for (s in servers) {
+            try {
+                val (c, b) = http("GET", "${s.base}/library/sections", headers(s.token))
+                if (c !in 200..299) continue
+                val dirs = JSONObject(b).optJSONObject("MediaContainer")?.optJSONArray("Directory") ?: continue
+                for (i in 0 until dirs.length()) {
+                    val d = dirs.getJSONObject(i)
+                    out += Section(s, d.optString("key"), d.optString("title"), d.optString("type"))
+                }
+            } catch (e: Exception) {
+            }
+        }
+        return out
+    }
+
+    /** Gleiche Titel aus mehreren Mediatheken (z. B. HD und 4K) zusammenführen, 4K bevorzugen. */
+    private fun dedupe(items: List<PlexItem>): List<PlexItem> {
+        val map = LinkedHashMap<String, PlexItem>()
+        for (i in items) {
+            val key = i.guid?.takeIf { it.isNotEmpty() && !it.startsWith("local") } ?: "${i.title}|${i.year}|${i.type}"
+            val existing = map[key]
+            if (existing == null || (i.resolution == "4K" && existing.resolution != "4K")) map[key] = i
+        }
+        return map.values.toList()
+    }
+
+    // ---------- Startseite ----------
+
     suspend fun loadRows(servers: List<PlexServer>): List<PlexRow> = withContext(Dispatchers.IO) {
         val onDeck = mutableListOf<PlexItem>()
-        val movies4k = mutableListOf<PlexItem>()
-        val shows4k = mutableListOf<PlexItem>()
         val recent = mutableListOf<PlexItem>()
         for (s in servers) {
             try {
                 onDeck += list(s, "/library/onDeck")
                 recent += list(s, "/library/recentlyAdded")
-                val (c, b) = http("GET", "${s.base}/library/sections", headers(s.token))
-                if (c in 200..299) {
-                    val dirs = JSONObject(b).optJSONObject("MediaContainer")?.optJSONArray("Directory") ?: JSONArray()
-                    for (i in 0 until dirs.length()) {
-                        val d = dirs.getJSONObject(i)
-                        val t = d.optString("title").lowercase()
-                        if (!t.contains("4k")) continue
-                        val key = d.optString("key")
-                        when (d.optString("type")) {
-                            "movie" -> movies4k += list(s, "/library/sections/$key/recentlyAdded")
-                            "show" -> shows4k += list(s, "/library/sections/$key/recentlyAdded")
-                        }
-                    }
+            } catch (e: Exception) {
+            }
+        }
+        val movies4k = mutableListOf<PlexItem>()
+        val shows4k = mutableListOf<PlexItem>()
+        for (sec in sections(servers)) {
+            if (!sec.title.lowercase().contains("4k")) continue
+            try {
+                when (sec.type) {
+                    "movie" -> movies4k += list(sec.server, "/library/sections/${sec.key}/recentlyAdded")
+                    "show" -> shows4k += list(sec.server, "/library/sections/${sec.key}/recentlyAdded")
                 }
             } catch (e: Exception) {
-                // Server nicht erreichbar: weiter mit dem nächsten
             }
         }
         val rows = mutableListOf<PlexRow>()
         if (onDeck.isNotEmpty()) rows += PlexRow("Weiterschauen", onDeck, landscape = true, resume = true)
-        if (movies4k.isNotEmpty()) rows += PlexRow("Neu in Filme 4K", movies4k, landscape = false, resume = false)
-        if (shows4k.isNotEmpty()) rows += PlexRow("Neu in Serien 4K", shows4k, landscape = false, resume = false)
+        if (movies4k.isNotEmpty()) rows += PlexRow("Neu in Filme 4K", movies4k, landscape = true, resume = false)
+        if (shows4k.isNotEmpty()) rows += PlexRow("Neu in Serien 4K", shows4k, landscape = true, resume = false)
         if (recent.isNotEmpty()) rows += PlexRow("Zuletzt hinzugefügt", recent, landscape = true, resume = false)
         val watch = loadWatchlist()
-        if (watch.isNotEmpty()) rows += PlexRow("Watchlist", watch, landscape = false, resume = false)
+        if (watch.isNotEmpty()) rows += PlexRow("Watchlist", watch, landscape = true, resume = false)
         rows
     }
+
+    // ---------- Filme / Serien ----------
+
+    /** type = "movie" oder "show". Liefert (neu hinzugefügt, alle Titel A–Z). */
+    suspend fun loadLibrary(servers: List<PlexServer>, type: String): Pair<List<PlexItem>, List<PlexItem>> = withContext(Dispatchers.IO) {
+        val all = mutableListOf<PlexItem>()
+        val recent = mutableListOf<PlexItem>()
+        for (sec in sections(servers).filter { it.type == type }) {
+            try {
+                all += list(sec.server, "/library/sections/${sec.key}/all?sort=titleSort", size = 10000)
+                recent += list(sec.server, "/library/sections/${sec.key}/recentlyAdded", size = 20)
+            } catch (e: Exception) {
+            }
+        }
+        val newest = dedupe(recent.sortedByDescending { it.addedAt }).take(20)
+        val sorted = dedupe(all).sortedBy { it.titleSort.lowercase(Locale.GERMANY) }
+        Pair(newest, sorted)
+    }
+
+    // ---------- Watchlist ----------
 
     private fun loadWatchlist(): List<PlexItem> {
         val token = userToken ?: return emptyList()
         return try {
             val (code, body) = http(
                 "GET",
-                "https://discover.provider.plex.tv/library/sections/watchlist/all?X-Plex-Container-Start=0&X-Plex-Container-Size=30",
+                "https://discover.provider.plex.tv/library/sections/watchlist/all?X-Plex-Container-Start=0&X-Plex-Container-Size=30&includeImages=1",
                 headers(token)
             )
             if (code !in 200..299) return emptyList()
@@ -290,13 +373,15 @@ class PlexRepo(context: Context) {
                     durationMs = m.optLong("duration"),
                     viewOffsetMs = 0,
                     posterUrl = m.optString("thumb").ifEmpty { null },
-                    landscapeUrl = m.optString("art").ifEmpty { null },
+                    landscapeUrl = m.optString("art").ifEmpty { m.optString("thumb") }.ifEmpty { null },
                     backdropUrl = m.optString("art").ifEmpty { null },
                     resolution = "",
                     audio = "",
                     summary = m.optString("summary"),
                     guid = m.optString("guid"),
-                    fromWatchlist = true
+                    fromWatchlist = true,
+                    contentRating = m.optString("contentRating").substringAfterLast('/'),
+                    genres = tags(m, "Genre", 2)
                 )
             }
         } catch (e: Exception) {
@@ -304,7 +389,6 @@ class PlexRepo(context: Context) {
         }
     }
 
-    /** Sucht einen Watchlist-Titel auf den Servern. */
     suspend fun resolveOnServer(item: PlexItem, servers: List<PlexServer>): PlexItem? = withContext(Dispatchers.IO) {
         val guid = item.guid ?: return@withContext null
         for (s in servers) {
@@ -318,8 +402,6 @@ class PlexRepo(context: Context) {
     }
 
     // ---------- Zwischenspeicher ----------
-
-    private val cacheFile = java.io.File(context.filesDir, "rows.json")
 
     fun saveServers(servers: List<PlexServer>) {
         val arr = JSONArray()
@@ -346,6 +428,8 @@ class PlexRepo(context: Context) {
         .put("posterUrl", i.posterUrl ?: "").put("landscapeUrl", i.landscapeUrl ?: "").put("backdropUrl", i.backdropUrl ?: "")
         .put("resolution", i.resolution).put("audio", i.audio).put("summary", i.summary)
         .put("guid", i.guid ?: "").put("fromWatchlist", i.fromWatchlist)
+        .put("logoUrl", i.logoUrl ?: "").put("contentRating", i.contentRating).put("genres", i.genres)
+        .put("rating", i.rating).put("titleSort", i.titleSort).put("addedAt", i.addedAt)
 
     private fun itemFromJson(o: JSONObject): PlexItem = PlexItem(
         serverId = o.optString("serverId"), ratingKey = o.optString("ratingKey"), type = o.optString("type"),
@@ -355,38 +439,55 @@ class PlexRepo(context: Context) {
         landscapeUrl = o.optString("landscapeUrl").ifEmpty { null },
         backdropUrl = o.optString("backdropUrl").ifEmpty { null },
         resolution = o.optString("resolution"), audio = o.optString("audio"), summary = o.optString("summary"),
-        guid = o.optString("guid").ifEmpty { null }, fromWatchlist = o.optBoolean("fromWatchlist")
+        guid = o.optString("guid").ifEmpty { null }, fromWatchlist = o.optBoolean("fromWatchlist"),
+        logoUrl = o.optString("logoUrl").ifEmpty { null }, contentRating = o.optString("contentRating"),
+        genres = o.optString("genres"), rating = o.optString("rating"), titleSort = o.optString("titleSort"),
+        addedAt = o.optLong("addedAt")
     )
+
+    private fun itemsToJson(items: List<PlexItem>): JSONArray = JSONArray().also { a -> items.forEach { a.put(itemToJson(it)) } }
+    private fun itemsFromJson(a: JSONArray): List<PlexItem> = (0 until a.length()).map { itemFromJson(a.getJSONObject(it)) }
 
     fun saveCache(rows: List<PlexRow>) {
         try {
             val arr = JSONArray()
             rows.forEach { r ->
-                val items = JSONArray()
-                r.items.forEach { items.put(itemToJson(it)) }
-                arr.put(JSONObject().put("title", r.title).put("landscape", r.landscape).put("resume", r.resume).put("items", items))
+                arr.put(JSONObject().put("title", r.title).put("landscape", r.landscape).put("resume", r.resume).put("items", itemsToJson(r.items)))
             }
-            cacheFile.writeText(arr.toString())
+            File(filesDir, "rows_v4.json").writeText(arr.toString())
         } catch (e: Exception) {
         }
     }
 
     fun loadCache(): List<PlexRow> = try {
-        if (!cacheFile.exists()) emptyList() else {
-            val arr = JSONArray(cacheFile.readText())
+        val f = File(filesDir, "rows_v4.json")
+        if (!f.exists()) emptyList() else {
+            val arr = JSONArray(f.readText())
             (0 until arr.length()).map { idx ->
                 val o = arr.getJSONObject(idx)
-                val items = o.getJSONArray("items")
-                PlexRow(
-                    o.getString("title"),
-                    (0 until items.length()).map { itemFromJson(items.getJSONObject(it)) },
-                    o.optBoolean("landscape"),
-                    o.optBoolean("resume")
-                )
+                PlexRow(o.getString("title"), itemsFromJson(o.getJSONArray("items")), o.optBoolean("landscape"), o.optBoolean("resume"))
             }
         }
     } catch (e: Exception) {
         emptyList()
+    }
+
+    fun saveLibraryCache(type: String, newest: List<PlexItem>, all: List<PlexItem>) {
+        try {
+            val o = JSONObject().put("newest", itemsToJson(newest)).put("all", itemsToJson(all))
+            File(filesDir, "library_$type.json").writeText(o.toString())
+        } catch (e: Exception) {
+        }
+    }
+
+    fun loadLibraryCache(type: String): Pair<List<PlexItem>, List<PlexItem>> = try {
+        val f = File(filesDir, "library_$type.json")
+        if (!f.exists()) Pair(emptyList(), emptyList()) else {
+            val o = JSONObject(f.readText())
+            Pair(itemsFromJson(o.getJSONArray("newest")), itemsFromJson(o.getJSONArray("all")))
+        }
+    } catch (e: Exception) {
+        Pair(emptyList(), emptyList())
     }
 
     // ---------- Links in die Plex-App ----------
@@ -397,10 +498,7 @@ class PlexRepo(context: Context) {
     }
 
     fun detailsUri(item: PlexItem): String {
-        val (key, tv) = when (item.type) {
-            "show" -> Pair(item.ratingKey, "tv/")
-            else -> Pair(item.ratingKey, "")
-        }
-        return "plex://libraries/${enc(item.serverId)}/unmatched/$tv${enc("/library/metadata/$key")}"
+        val tv = if (item.type == "show") "tv/" else ""
+        return "plex://libraries/${enc(item.serverId)}/unmatched/$tv${enc("/library/metadata/${item.ratingKey}")}"
     }
 }

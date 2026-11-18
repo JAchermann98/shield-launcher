@@ -13,6 +13,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -31,29 +33,36 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -70,13 +79,17 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.graphics.drawable.toBitmap
 import coil.compose.AsyncImage
+import coil.compose.AsyncImagePainter
 import coil.imageLoader
 import coil.request.ImageRequest
 import kotlinx.coroutines.Dispatchers
@@ -92,12 +105,13 @@ private val TextMain = Color(0xFFF2F4F7)
 private val TextSoft = Color(0xFFC9D3E0)
 private val TextDim = Color(0xFFA9B4C4)
 private val Tile = Color(0xFF1C222C)
-private val Accent = Color(0xFF7FB2FF)
 
-/** Verhindert das automatische Mitscrollen der Zeilenliste; wir steuern es selbst. */
-private val NoAutoScroll = object : BringIntoViewSpec {
-    override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float): Float = 0f
-}
+private enum class Tab { START, FILME, SERIEN }
+
+// Layout der Startseite (in dp, Bildschirm 960 x 540)
+private const val FOCUS_Y = 318
+private const val ROW_STEP = 168
+private const val PREV_Y = -118
 
 class MainActivity : ComponentActivity() {
 
@@ -126,7 +140,7 @@ fun LauncherApp(repo: PlexRepo, resumeCount: Int) {
         if (!loggedIn) {
             LoginScreen(repo) { loggedIn = true }
         } else {
-            HomeScreen(repo, resumeCount)
+            HomeRoot(repo, resumeCount)
         }
     }
 }
@@ -171,27 +185,31 @@ fun LoginScreen(repo: PlexRepo, onDone: () -> Unit) {
     }
 }
 
-// ---------------------------------------------------------------- Startbildschirm
+// ---------------------------------------------------------------- Rahmen mit Kopfzeile und Seiten
 
 @Composable
-fun HomeScreen(repo: PlexRepo, resumeCount: Int) {
+fun HomeRoot(repo: PlexRepo, resumeCount: Int) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val defaultSpec = LocalBringIntoViewSpec.current
 
     var servers by remember { mutableStateOf(repo.loadServers()) }
     var rows by remember { mutableStateOf(repo.loadCache()) }
-    val focusState = remember { mutableStateOf(rows.firstOrNull()?.items?.firstOrNull()) }
     var status by remember { mutableStateOf(if (rows.isEmpty()) "Lade Inhalte von Plex …" else "") }
-    var showApps by remember { mutableStateOf(false) }
     var lastRefresh by remember { mutableLongStateOf(0L) }
-    val firstFocus = remember { FocusRequester() }
-    var didInitialFocus by remember { mutableStateOf(false) }
-    val listState = rememberLazyListState()
+    val focusState = remember { mutableStateOf(rows.firstOrNull()?.items?.firstOrNull()) }
+    var tab by remember { mutableStateOf(Tab.START) }
+    var focusedRow by remember { mutableIntStateOf(0) }
+    var libScrolled by remember { mutableStateOf(false) }
+    var showApps by remember { mutableStateOf(false) }
 
-    BackHandler(enabled = true) { if (showApps) showApps = false }
+    BackHandler(enabled = true) {
+        when {
+            showApps -> showApps = false
+            tab != Tab.START -> tab = Tab.START
+        }
+    }
 
-    // Still im Hintergrund aktualisieren (beim Start und beim Zurückkehren)
+    // Startseite still im Hintergrund aktualisieren
     LaunchedEffect(resumeCount) {
         if (System.currentTimeMillis() - lastRefresh < 20_000) return@LaunchedEffect
         lastRefresh = System.currentTimeMillis()
@@ -210,11 +228,11 @@ fun HomeScreen(repo: PlexRepo, resumeCount: Int) {
                 status = ""
                 if (focusState.value == null) focusState.value = loaded.first().items.firstOrNull()
                 withContext(Dispatchers.IO) { repo.saveCache(loaded) }
-                // Hintergrundbilder der ersten Titel vorladen
                 val loader = context.imageLoader
                 loaded.forEach { r ->
                     r.items.take(4).forEach { item ->
                         item.backdropUrl?.let { loader.enqueue(ImageRequest.Builder(context).data(it).build()) }
+                        item.logoUrl?.let { loader.enqueue(ImageRequest.Builder(context).data(it).build()) }
                     }
                 }
             } else if (rows.isEmpty()) {
@@ -225,72 +243,55 @@ fun HomeScreen(repo: PlexRepo, resumeCount: Int) {
         }
     }
 
-    LaunchedEffect(rows.isNotEmpty()) {
-        if (rows.isNotEmpty() && !didInitialFocus) {
-            delay(120)
-            try {
-                firstFocus.requestFocus()
-                didInitialFocus = true
-            } catch (e: Exception) {
-            }
-        }
-    }
-
-    fun openItem(item: PlexItem, play: Boolean) {
+    val openItem: (PlexItem, Boolean) -> Unit = { item, play ->
         scope.launch {
             val target = if (item.fromWatchlist) repo.resolveOnServer(item, servers) else item
             if (target == null) {
                 Toast.makeText(context, "Dieser Titel ist auf deinen Servern nicht verfügbar.", Toast.LENGTH_LONG).show()
-                return@launch
-            }
-            val uri = if (play) repo.playUri(target) else repo.detailsUri(target)
-            try {
-                val i = Intent(Intent.ACTION_VIEW, Uri.parse(uri))
-                i.setPackage("com.plexapp.android")
-                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                context.startActivity(i)
-            } catch (e: Exception) {
-                Toast.makeText(context, "Plex konnte nicht geöffnet werden.", Toast.LENGTH_LONG).show()
+            } else {
+                val uri = if (play) repo.playUri(target) else repo.detailsUri(target)
+                try {
+                    val i = Intent(Intent.ACTION_VIEW, Uri.parse(uri))
+                    i.setPackage("com.plexapp.android")
+                    i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    context.startActivity(i)
+                } catch (e: Exception) {
+                    Toast.makeText(context, "Plex konnte nicht geöffnet werden.", Toast.LENGTH_LONG).show()
+                }
             }
         }
     }
-
     val onFocusItem: (PlexItem) -> Unit = remember { { focusState.value = it } }
 
+    val topBarVisible = if (tab == Tab.START) focusedRow == 0 else !libScrolled
+    val topAlpha by animateFloatAsState(if (topBarVisible) 1f else 0f, tween(300), label = "topAlpha")
+
     Box(Modifier.fillMaxSize()) {
-        Backdrop(focusState)
+        Backdrop(focusState, dim = tab != Tab.START)
 
-        Column(Modifier.fillMaxSize()) {
-            Box(Modifier.padding(start = 48.dp, top = 24.dp)) {
-                TopBar(onApps = { showApps = true })
-            }
-            Hero(focusState, status)
+        when (tab) {
+            Tab.START -> StartScreen(
+                rows = rows,
+                status = status,
+                focusState = focusState,
+                onFocusItem = onFocusItem,
+                onRowFocused = { focusedRow = it },
+                openItem = openItem
+            )
+            Tab.FILME -> LibraryScreen(repo, servers, "movie", "Alle Filme", onFocusItem, openItem) { libScrolled = it }
+            Tab.SERIEN -> LibraryScreen(repo, servers, "show", "Alle Serien", onFocusItem, openItem) { libScrolled = it }
+        }
 
-            // Zeilenbereich: scrollt nur hier unten, der Kopfbereich bleibt stehen
-            Box(Modifier.fillMaxWidth().weight(1f)) {
-                CompositionLocalProvider(LocalBringIntoViewSpec provides NoAutoScroll) {
-                    LazyColumn(
-                        state = listState,
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(start = 48.dp, top = 6.dp, bottom = 400.dp),
-                        verticalArrangement = Arrangement.spacedBy(18.dp)
-                    ) {
-                        itemsIndexed(rows, key = { _, r -> r.title }) { rowIndex, row ->
-                            ContentRow(
-                                row = row,
-                                defaultSpec = defaultSpec,
-                                firstFocus = if (rowIndex == 0) firstFocus else null,
-                                modifier = Modifier.onFocusChanged {
-                                    if (it.hasFocus) scope.launch { listState.animateScrollToItem(rowIndex) }
-                                },
-                                onFocus = onFocusItem,
-                                onClick = { openItem(it, play = false) },
-                                onLongClick = { openItem(it, play = true) }
-                            )
-                        }
-                    }
-                }
-            }
+        Box(
+            Modifier
+                .padding(start = 48.dp, top = 22.dp)
+                .graphicsLayer { alpha = topAlpha; translationY = (1f - topAlpha) * -30f }
+        ) {
+            TopBar(
+                tab = tab,
+                onTab = { tab = it; focusedRow = 0; libScrolled = false },
+                onApps = { showApps = true }
+            )
         }
 
         if (showApps) {
@@ -302,18 +303,18 @@ fun HomeScreen(repo: PlexRepo, resumeCount: Int) {
 // ---------------------------------------------------------------- Hintergrund
 
 @Composable
-fun Backdrop(focusState: MutableState<PlexItem?>) {
+fun Backdrop(focusState: MutableState<PlexItem?>, dim: Boolean) {
     val target = focusState.value?.backdropUrl
     var shown by remember { mutableStateOf(target) }
-    // Erst wechseln, wenn die Auswahl kurz stehen bleibt: schont die Leistung beim schnellen Durchblättern
     LaunchedEffect(target) {
         if (target != shown) {
-            delay(220)
+            delay(200)
             shown = target
         }
     }
-    Box(Modifier.fillMaxWidth().fillMaxHeight(0.78f)) {
-        Crossfade(targetState = shown, animationSpec = tween(600), label = "backdrop") { url ->
+    val dimAlpha by animateFloatAsState(if (dim) 0.55f else 0f, tween(400), label = "dim")
+    Box(Modifier.fillMaxSize()) {
+        Crossfade(targetState = shown, animationSpec = tween(550), label = "backdrop") { url ->
             if (url != null) {
                 AsyncImage(model = url, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
             } else {
@@ -322,21 +323,22 @@ fun Backdrop(focusState: MutableState<PlexItem?>) {
         }
         Box(
             Modifier.fillMaxSize().background(
-                Brush.horizontalGradient(0f to Bg.copy(alpha = 0.95f), 0.45f to Bg.copy(alpha = 0.55f), 0.8f to Bg.copy(alpha = 0.05f))
+                Brush.horizontalGradient(0f to Bg.copy(alpha = 0.92f), 0.4f to Bg.copy(alpha = 0.55f), 0.75f to Bg.copy(alpha = 0f))
             )
         )
         Box(
             Modifier.fillMaxSize().background(
-                Brush.verticalGradient(0f to Color.Transparent, 0.55f to Bg.copy(alpha = 0.35f), 1f to Bg)
+                Brush.verticalGradient(0f to Bg.copy(alpha = 0.35f), 0.18f to Color.Transparent, 0.5f to Color.Transparent, 0.72f to Bg.copy(alpha = 0.8f), 1f to Bg)
             )
         )
+        Box(Modifier.fillMaxSize().background(Bg.copy(alpha = dimAlpha)))
     }
 }
 
 // ---------------------------------------------------------------- Kopfzeile
 
 @Composable
-fun TopBar(onApps: () -> Unit) {
+private fun TopBar(tab: Tab, onTab: (Tab) -> Unit, onApps: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var time by remember { mutableStateOf(clock()) }
@@ -355,13 +357,19 @@ fun TopBar(onApps: () -> Unit) {
     }
     Row(Modifier.fillMaxWidth().padding(end = 48.dp), verticalAlignment = Alignment.CenterVertically) {
         BasicText(time, style = TextStyle(color = TextMain, fontSize = 18.sp, fontWeight = FontWeight.SemiBold))
-        Spacer(Modifier.width(20.dp))
+        Spacer(Modifier.width(18.dp))
         PillButton("Plex") { launchApp(context, listOf("com.plexapp.android")) }
-        Spacer(Modifier.width(8.dp))
+        Spacer(Modifier.width(6.dp))
         PillButton("YouTube") { launchYouTube(context) }
-        Spacer(Modifier.width(8.dp))
+        Spacer(Modifier.width(6.dp))
         PillButton("Alle Apps") { onApps() }
         Spacer(Modifier.weight(1f))
+        PillButton("Start", selected = tab == Tab.START) { onTab(Tab.START) }
+        Spacer(Modifier.width(6.dp))
+        PillButton("Filme", selected = tab == Tab.FILME) { onTab(Tab.FILME) }
+        Spacer(Modifier.width(6.dp))
+        PillButton("Serien", selected = tab == Tab.SERIEN) { onTab(Tab.SERIEN) }
+        Spacer(Modifier.width(18.dp))
         PillButton(updateLabel) {
             scope.launch {
                 try {
@@ -379,7 +387,7 @@ fun TopBar(onApps: () -> Unit) {
                 }
             }
         }
-        Spacer(Modifier.width(8.dp))
+        Spacer(Modifier.width(6.dp))
         PillButton("Einstellungen") {
             val i = Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             try { context.startActivity(i) } catch (e: Exception) { }
@@ -390,66 +398,175 @@ fun TopBar(onApps: () -> Unit) {
 private fun clock(): String = SimpleDateFormat("HH:mm", Locale.GERMANY).format(Date())
 
 @Composable
-fun PillButton(label: String, onClick: () -> Unit) {
+fun PillButton(label: String, selected: Boolean = false, onClick: () -> Unit) {
     val src = remember { MutableInteractionSource() }
     val isFocused by src.collectIsFocusedAsState()
+    val bg = when {
+        isFocused -> TextMain
+        selected -> Color.White.copy(alpha = 0.24f)
+        else -> Color.White.copy(alpha = 0.10f)
+    }
     Box(
         Modifier
             .clip(RoundedCornerShape(50))
-            .background(if (isFocused) TextMain else Color.White.copy(alpha = 0.10f))
+            .background(bg)
             .clickable(interactionSource = src, indication = null) { onClick() }
-            .padding(horizontal = 16.dp, vertical = 7.dp)
+            .padding(horizontal = 13.dp, vertical = 6.dp)
     ) {
-        BasicText(label, style = TextStyle(color = if (isFocused) Bg else TextMain, fontSize = 14.sp, fontWeight = FontWeight.SemiBold))
+        BasicText(
+            label,
+            style = TextStyle(
+                color = if (isFocused) Bg else TextMain,
+                fontSize = 13.sp,
+                fontWeight = if (selected || isFocused) FontWeight.Bold else FontWeight.SemiBold
+            )
+        )
     }
 }
 
-// ---------------------------------------------------------------- Kopfbereich mit Infos
+// ---------------------------------------------------------------- Startseite
+
+@Composable
+private fun StartScreen(
+    rows: List<PlexRow>,
+    status: String,
+    focusState: MutableState<PlexItem?>,
+    onFocusItem: (PlexItem) -> Unit,
+    onRowFocused: (Int) -> Unit,
+    openItem: (PlexItem, Boolean) -> Unit
+) {
+    var focusedRow by remember { mutableIntStateOf(0) }
+    val firstFocus = remember { FocusRequester() }
+    var didInitialFocus by remember { mutableStateOf(false) }
+
+    LaunchedEffect(rows.isNotEmpty()) {
+        if (rows.isNotEmpty() && !didInitialFocus) {
+            delay(120)
+            try {
+                firstFocus.requestFocus()
+                didInitialFocus = true
+            } catch (e: Exception) {
+            }
+        }
+    }
+
+    Box(Modifier.fillMaxSize()) {
+        // Infos zum ausgewählten Titel, unten bündig über der aktiven Zeile
+        Box(
+            Modifier.offset(x = 48.dp, y = 66.dp).width(470.dp).height((FOCUS_Y - 66 - 12).dp),
+            contentAlignment = Alignment.BottomStart
+        ) {
+            Hero(focusState, status)
+        }
+
+        rows.forEachIndexed { i, row -> key(row.title) {
+            val target: Int = when {
+                i == focusedRow -> FOCUS_Y
+                i < focusedRow -> PREV_Y - ROW_STEP * (focusedRow - 1 - i)
+                else -> FOCUS_Y + ROW_STEP * (i - focusedRow)
+            }
+            val y by animateDpAsState(target.dp, tween(420, easing = FastOutSlowInEasing), label = "rowY$i")
+            val alpha by animateFloatAsState(
+                when {
+                    i == focusedRow -> 1f
+                    i == focusedRow - 1 -> 0.45f
+                    i == focusedRow + 1 -> 0.9f
+                    else -> 0f
+                },
+                tween(380),
+                label = "rowA$i"
+            )
+            ContentRow(
+                row = row,
+                firstFocus = if (i == 0) firstFocus else null,
+                modifier = Modifier
+                    .offset { IntOffset(0, y.roundToPx()) }
+                    .graphicsLayer { this.alpha = alpha }
+                    .onFocusChanged {
+                        if (it.hasFocus && focusedRow != i) {
+                            focusedRow = i
+                            onRowFocused(i)
+                        }
+                    },
+                onFocus = onFocusItem,
+                onClick = { openItem(it, false) },
+                onLongClick = { openItem(it, true) }
+            )
+        } }
+    }
+}
+
+// ---------------------------------------------------------------- Infos (Logo, Daten, Beschreibung)
 
 @Composable
 fun Hero(focusState: MutableState<PlexItem?>, status: String) {
     val item = focusState.value
-    Box(Modifier.padding(start = 48.dp, top = 12.dp).width(480.dp).height(196.dp), contentAlignment = Alignment.BottomStart) {
-        if (item == null) {
-            BasicText(status, style = TextStyle(color = TextSoft, fontSize = 16.sp))
-        } else {
-            Crossfade(targetState = item, animationSpec = tween(250), label = "hero") { cur ->
-                Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.Bottom) {
-                    BasicText(
-                        cur.title, maxLines = 2, overflow = TextOverflow.Ellipsis,
-                        style = TextStyle(color = TextMain, fontSize = 34.sp, fontWeight = FontWeight.Bold, lineHeight = 37.sp)
-                    )
-                    if (cur.subtitle.isNotEmpty()) {
-                        Spacer(Modifier.height(4.dp))
-                        BasicText(cur.subtitle, maxLines = 1, overflow = TextOverflow.Ellipsis, style = TextStyle(color = TextSoft, fontSize = 15.sp))
+    if (item == null) {
+        BasicText(status, style = TextStyle(color = TextSoft, fontSize = 16.sp))
+        return
+    }
+    Crossfade(targetState = item, animationSpec = tween(260), label = "hero") { cur ->
+        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.Bottom) {
+            TitleOrLogo(cur)
+            if (cur.subtitle.isNotEmpty()) {
+                Spacer(Modifier.height(4.dp))
+                BasicText(cur.subtitle, maxLines = 1, overflow = TextOverflow.Ellipsis, style = TextStyle(color = TextSoft, fontSize = 14.sp, fontWeight = FontWeight.SemiBold))
+            }
+            Spacer(Modifier.height(10.dp))
+            MetaRow(cur)
+            if (cur.progress > 0f) {
+                Spacer(Modifier.height(10.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.width(180.dp).height(3.dp).clip(RoundedCornerShape(2.dp)).background(Color.White.copy(alpha = 0.22f))) {
+                        Box(Modifier.fillMaxHeight().fillMaxWidth(cur.progress).background(TextMain))
                     }
-                    Spacer(Modifier.height(8.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        val meta = listOfNotNull(
-                            cur.year.ifEmpty { null },
-                            if (cur.durationMs > 0) formatDuration(cur.durationMs) else null
-                        ).joinToString(" · ")
-                        if (meta.isNotEmpty()) BasicText(meta, style = TextStyle(color = TextSoft, fontSize = 13.sp))
-                        if (cur.resolution.isNotEmpty()) { Spacer(Modifier.width(8.dp)); Badge(cur.resolution) }
-                        if (cur.audio.isNotEmpty()) { Spacer(Modifier.width(6.dp)); Badge(cur.audio) }
-                    }
-                    if (cur.progress > 0f) {
-                        Spacer(Modifier.height(10.dp))
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Box(Modifier.width(180.dp).height(3.dp).clip(RoundedCornerShape(2.dp)).background(Color.White.copy(alpha = 0.22f))) {
-                                Box(Modifier.fillMaxHeight().fillMaxWidth(cur.progress).background(TextMain))
-                            }
-                            Spacer(Modifier.width(10.dp))
-                            BasicText("Noch ${formatDuration(cur.durationMs - cur.viewOffsetMs)}", style = TextStyle(color = TextSoft, fontSize = 12.sp))
-                        }
-                    }
-                    if (cur.summary.isNotEmpty()) {
-                        Spacer(Modifier.height(10.dp))
-                        BasicText(cur.summary, maxLines = 2, overflow = TextOverflow.Ellipsis, style = TextStyle(color = TextDim, fontSize = 13.sp, lineHeight = 17.sp))
-                    }
+                    Spacer(Modifier.width(10.dp))
+                    BasicText("Noch ${formatDuration(cur.durationMs - cur.viewOffsetMs)}", style = TextStyle(color = TextSoft, fontSize = 12.sp))
                 }
             }
+            if (cur.summary.isNotEmpty()) {
+                Spacer(Modifier.height(10.dp))
+                BasicText(cur.summary, maxLines = 3, overflow = TextOverflow.Ellipsis, style = TextStyle(color = TextSoft, fontSize = 13.sp, lineHeight = 18.sp))
+            }
         }
+    }
+}
+
+@Composable
+private fun TitleOrLogo(item: PlexItem) {
+    var logoFailed by remember(item.logoUrl) { mutableStateOf(item.logoUrl == null) }
+    if (!logoFailed && item.logoUrl != null) {
+        AsyncImage(
+            model = item.logoUrl,
+            contentDescription = item.title,
+            contentScale = ContentScale.Fit,
+            alignment = Alignment.CenterStart,
+            onState = { if (it is AsyncImagePainter.State.Error) logoFailed = true },
+            modifier = Modifier.height(84.dp).widthIn(max = 340.dp).fillMaxWidth()
+        )
+    } else {
+        BasicText(
+            item.title, maxLines = 2, overflow = TextOverflow.Ellipsis,
+            style = TextStyle(color = TextMain, fontSize = 34.sp, fontWeight = FontWeight.Bold, lineHeight = 37.sp)
+        )
+    }
+}
+
+@Composable
+private fun MetaRow(item: PlexItem) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        if (item.contentRating.isNotEmpty()) { Badge(item.contentRating); Spacer(Modifier.width(8.dp)) }
+        val parts = listOfNotNull(
+            item.year.ifEmpty { null },
+            item.genres.ifEmpty { null },
+            if (item.durationMs > 0) formatDuration(item.durationMs) else null,
+            if (item.rating.isNotEmpty()) "★ ${item.rating}" else null
+        )
+        if (parts.isNotEmpty()) {
+            BasicText(parts.joinToString("  ·  "), maxLines = 1, style = TextStyle(color = TextSoft, fontSize = 12.sp, fontWeight = FontWeight.SemiBold))
+        }
+        if (item.resolution.isNotEmpty()) { Spacer(Modifier.width(8.dp)); Badge(item.resolution) }
+        if (item.audio.isNotEmpty()) { Spacer(Modifier.width(6.dp)); Badge(item.audio) }
     }
 }
 
@@ -460,36 +577,45 @@ private fun formatDuration(ms: Long): String {
 
 @Composable
 fun Badge(text: String) {
-    Box(Modifier.border(1.dp, TextMain.copy(alpha = 0.55f), RoundedCornerShape(3.dp)).padding(horizontal = 5.dp, vertical = 1.dp)) {
-        BasicText(text, style = TextStyle(color = TextMain, fontSize = 10.sp, fontWeight = FontWeight.SemiBold))
+    Box(Modifier.border(1.dp, TextMain.copy(alpha = 0.6f), RoundedCornerShape(3.dp)).padding(horizontal = 5.dp, vertical = 1.dp)) {
+        BasicText(text, style = TextStyle(color = TextMain, fontSize = 10.sp, fontWeight = FontWeight.Bold))
     }
 }
 
 // ---------------------------------------------------------------- Zeilen
 
+/** Hält die ausgewählte Kachel links an fester Position, die Zeile gleitet darunter durch. */
 @Composable
-fun ContentRow(
+private fun rememberPivotSpec(pivot: Dp): BringIntoViewSpec {
+    val px = with(LocalDensity.current) { pivot.toPx() }
+    return remember(px) {
+        object : BringIntoViewSpec {
+            override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float): Float = offset - px
+        }
+    }
+}
+
+@Composable
+private fun ContentRow(
     row: PlexRow,
-    defaultSpec: BringIntoViewSpec,
     firstFocus: FocusRequester?,
     modifier: Modifier,
     onFocus: (PlexItem) -> Unit,
     onClick: (PlexItem) -> Unit,
     onLongClick: (PlexItem) -> Unit
 ) {
-    Column(modifier) {
-        BasicText(row.title, style = TextStyle(color = TextMain, fontSize = 15.sp, fontWeight = FontWeight.SemiBold))
-        Spacer(Modifier.height(8.dp))
-        // In der Zeile selbst normal seitwärts mitscrollen
-        CompositionLocalProvider(LocalBringIntoViewSpec provides defaultSpec) {
+    val pivot = rememberPivotSpec(48.dp)
+    Column(modifier.fillMaxWidth()) {
+        BasicText(row.title, modifier = Modifier.padding(start = 48.dp), style = TextStyle(color = TextMain, fontSize = 15.sp, fontWeight = FontWeight.Bold))
+        Spacer(Modifier.height(4.dp))
+        CompositionLocalProvider(LocalBringIntoViewSpec provides pivot) {
             LazyRow(
                 horizontalArrangement = Arrangement.spacedBy(14.dp),
-                contentPadding = PaddingValues(start = 6.dp, end = 64.dp, top = 8.dp, bottom = 8.dp)
+                contentPadding = PaddingValues(start = 48.dp, end = 600.dp, top = 8.dp, bottom = 6.dp)
             ) {
                 itemsIndexed(row.items, key = { i, it -> "${it.serverId}/${it.ratingKey}/$i" }) { index, item ->
-                    Card(
+                    LandscapeCard(
                         item = item,
-                        landscape = row.landscape,
                         modifier = if (index == 0 && firstFocus != null) Modifier.focusRequester(firstFocus) else Modifier,
                         onFocus = onFocus,
                         onClick = onClick,
@@ -502,9 +628,8 @@ fun ContentRow(
 }
 
 @Composable
-fun Card(
+private fun LandscapeCard(
     item: PlexItem,
-    landscape: Boolean,
     modifier: Modifier,
     onFocus: (PlexItem) -> Unit,
     onClick: (PlexItem) -> Unit,
@@ -512,49 +637,220 @@ fun Card(
 ) {
     val src = remember { MutableInteractionSource() }
     val isFocused by src.collectIsFocusedAsState()
-    val scale by animateFloatAsState(if (isFocused) 1.1f else 1f, animationSpec = tween(160), label = "scale")
-    val w = if (landscape) 176.dp else 100.dp
-    val h = if (landscape) 99.dp else 150.dp
+    val scale by animateFloatAsState(if (isFocused) 1.08f else 1f, tween(180), label = "scale")
     val shape = RoundedCornerShape(8.dp)
-    Column(modifier.width(w)) {
+    Column(modifier.width(176.dp)) {
         Box(
             Modifier
-                .size(w, h)
+                .size(176.dp, 99.dp)
                 .graphicsLayer { scaleX = scale; scaleY = scale }
                 .onFocusChanged { if (it.isFocused) onFocus(item) }
                 .clip(shape)
                 .background(Tile)
-                .border(2.dp, if (isFocused) Accent else Color.Transparent, shape)
-                .combinedClickable(
-                    interactionSource = src,
-                    indication = null,
-                    onLongClick = { onLongClick(item) },
-                    onClick = { onClick(item) }
-                )
+                .border(2.dp, if (isFocused) TextMain else Color.Transparent, shape)
+                .combinedClickable(interactionSource = src, indication = null, onLongClick = { onLongClick(item) }, onClick = { onClick(item) })
         ) {
-            val url = if (landscape) item.landscapeUrl ?: item.posterUrl else item.posterUrl
+            val url = item.landscapeUrl ?: item.posterUrl
             if (url != null) {
                 AsyncImage(model = url, contentDescription = item.title, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
-            } else {
-                BasicText(item.title, modifier = Modifier.padding(8.dp), style = TextStyle(color = TextDim, fontSize = 12.sp))
             }
             if (item.progress > 0f) {
                 Box(
-                    Modifier.align(Alignment.BottomStart).fillMaxWidth().padding(6.dp).height(3.dp)
+                    Modifier.align(Alignment.BottomStart).fillMaxWidth().padding(7.dp).height(3.dp)
                         .clip(RoundedCornerShape(2.dp)).background(Color.White.copy(alpha = 0.3f))
                 ) {
-                    Box(Modifier.fillMaxHeight().fillMaxWidth(item.progress).background(if (isFocused) Accent else TextMain))
+                    Box(Modifier.fillMaxHeight().fillMaxWidth(item.progress).background(TextMain))
                 }
             }
         }
-        if (landscape) {
-            Spacer(Modifier.height(6.dp))
-            BasicText(
-                if (item.subtitle.isNotEmpty()) "${item.title} · ${item.subtitle}" else item.title,
-                maxLines = 1, overflow = TextOverflow.Ellipsis,
-                style = TextStyle(color = if (isFocused) TextMain else TextDim, fontSize = 11.sp)
-            )
+        Spacer(Modifier.height(6.dp))
+        BasicText(
+            if (item.subtitle.isNotEmpty()) "${item.title} · ${item.subtitle}" else item.title,
+            maxLines = 1, overflow = TextOverflow.Ellipsis,
+            style = TextStyle(color = if (isFocused) TextMain else TextDim, fontSize = 11.sp)
+        )
+    }
+}
+
+// ---------------------------------------------------------------- Filme / Serien
+
+@Composable
+private fun LibraryScreen(
+    repo: PlexRepo,
+    servers: List<PlexServer>,
+    type: String,
+    allTitle: String,
+    onFocusItem: (PlexItem) -> Unit,
+    openItem: (PlexItem, Boolean) -> Unit,
+    onScrolled: (Boolean) -> Unit
+) {
+    val scope = rememberCoroutineScope()
+    val cached = remember(type) { repo.loadLibraryCache(type) }
+    var newest by remember(type) { mutableStateOf(cached.first) }
+    var all by remember(type) { mutableStateOf(cached.second) }
+    var loading by remember(type) { mutableStateOf(all.isEmpty()) }
+    val gridState = rememberLazyGridState()
+    val firstFocus = remember(type) { FocusRequester() }
+    val requesters = remember(type) { mutableStateMapOf<Int, FocusRequester>() }
+    val pivot = rememberPivotSpec(48.dp)
+
+    LaunchedEffect(type, servers) {
+        if (servers.isEmpty()) return@LaunchedEffect
+        try {
+            val (n, a) = repo.loadLibrary(servers, type)
+            if (a.isNotEmpty()) {
+                newest = n
+                all = a
+                withContext(Dispatchers.IO) { repo.saveLibraryCache(type, n, a) }
+            }
+        } catch (e: Exception) {
         }
+        loading = false
+    }
+    var didFocus by remember(type) { mutableStateOf(false) }
+    LaunchedEffect(type, newest.isNotEmpty() || all.isNotEmpty()) {
+        if (!didFocus && (newest.isNotEmpty() || all.isNotEmpty())) {
+            delay(150)
+            try { firstFocus.requestFocus(); didFocus = true } catch (e: Exception) { }
+        }
+    }
+
+    LaunchedEffect(gridState) {
+        snapshotFlow { gridState.firstVisibleItemIndex > 0 }.collect { onScrolled(it) }
+    }
+
+    val letters = remember(all) { listOf("#") + ('A'..'Z').map { it.toString() } }
+    val headerCount = 2
+
+    Box(Modifier.fillMaxSize()) {
+        LazyVerticalGrid(
+            columns = GridCells.Fixed(7),
+            state = gridState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(start = 48.dp, end = 64.dp, top = 70.dp, bottom = 48.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                Column {
+                    BasicText("Neu", style = TextStyle(color = TextMain, fontSize = 15.sp, fontWeight = FontWeight.Bold))
+                    Spacer(Modifier.height(4.dp))
+                    CompositionLocalProvider(LocalBringIntoViewSpec provides pivot) {
+                        LazyRow(
+                            horizontalArrangement = Arrangement.spacedBy(14.dp),
+                            contentPadding = PaddingValues(start = 0.dp, end = 600.dp, top = 8.dp, bottom = 6.dp)
+                        ) {
+                            itemsIndexed(newest, key = { i, it -> "n/${it.serverId}/${it.ratingKey}/$i" }) { index, item ->
+                                LandscapeCard(
+                                    item = item,
+                                    modifier = if (index == 0) Modifier.focusRequester(firstFocus) else Modifier,
+                                    onFocus = onFocusItem,
+                                    onClick = { openItem(it, false) },
+                                    onLongClick = { openItem(it, true) }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                Row(verticalAlignment = Alignment.Bottom) {
+                    BasicText(allTitle, style = TextStyle(color = TextMain, fontSize = 15.sp, fontWeight = FontWeight.Bold))
+                    Spacer(Modifier.width(10.dp))
+                    BasicText(
+                        if (loading && all.isEmpty()) "wird geladen …" else "${all.size} Titel",
+                        style = TextStyle(color = TextDim, fontSize = 12.sp)
+                    )
+                }
+            }
+            itemsIndexed(all, key = { i, it -> "a/${it.serverId}/${it.ratingKey}/$i" }) { index, item ->
+                val fr = remember { FocusRequester() }
+                DisposableEffect(index) {
+                    requesters[index] = fr
+                    onDispose { requesters.remove(index) }
+                }
+                PosterCard(
+                    item = item,
+                    modifier = Modifier.focusRequester(fr),
+                    onFocus = onFocusItem,
+                    onClick = { openItem(it, false) },
+                    onLongClick = { openItem(it, true) }
+                )
+            }
+        }
+
+        // A–Z-Leiste
+        Column(
+            Modifier.align(Alignment.CenterEnd).padding(end = 14.dp, top = 60.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            letters.forEach { l ->
+                LetterButton(l) {
+                    val idx = all.indexOfFirst { it.letter == l }
+                    if (idx >= 0) {
+                        scope.launch {
+                            gridState.scrollToItem(idx + headerCount)
+                            delay(60)
+                            try { requesters[idx]?.requestFocus() } catch (e: Exception) { }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LetterButton(letter: String, onClick: () -> Unit) {
+    val src = remember { MutableInteractionSource() }
+    val isFocused by src.collectIsFocusedAsState()
+    Box(
+        Modifier
+            .size(18.dp, 15.dp)
+            .clip(RoundedCornerShape(4.dp))
+            .background(if (isFocused) TextMain else Color.Transparent)
+            .clickable(interactionSource = src, indication = null) { onClick() },
+        contentAlignment = Alignment.Center
+    ) {
+        BasicText(letter, style = TextStyle(color = if (isFocused) Bg else TextDim, fontSize = 10.sp, fontWeight = FontWeight.Bold))
+    }
+}
+
+@Composable
+private fun PosterCard(
+    item: PlexItem,
+    modifier: Modifier,
+    onFocus: (PlexItem) -> Unit,
+    onClick: (PlexItem) -> Unit,
+    onLongClick: (PlexItem) -> Unit
+) {
+    val src = remember { MutableInteractionSource() }
+    val isFocused by src.collectIsFocusedAsState()
+    val scale by animateFloatAsState(if (isFocused) 1.08f else 1f, tween(160), label = "pscale")
+    val shape = RoundedCornerShape(7.dp)
+    Column(modifier) {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .aspectRatio(2f / 3f)
+                .graphicsLayer { scaleX = scale; scaleY = scale }
+                .onFocusChanged { if (it.isFocused) onFocus(item) }
+                .clip(shape)
+                .background(Tile)
+                .border(2.dp, if (isFocused) TextMain else Color.Transparent, shape)
+                .combinedClickable(interactionSource = src, indication = null, onLongClick = { onLongClick(item) }, onClick = { onClick(item) })
+        ) {
+            if (item.posterUrl != null) {
+                AsyncImage(model = item.posterUrl, contentDescription = item.title, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+            } else {
+                BasicText(item.title, modifier = Modifier.padding(6.dp), style = TextStyle(color = TextDim, fontSize = 11.sp))
+            }
+        }
+        Spacer(Modifier.height(5.dp))
+        BasicText(
+            item.title, maxLines = 1, overflow = TextOverflow.Ellipsis,
+            style = TextStyle(color = if (isFocused) TextMain else TextDim, fontSize = 10.sp)
+        )
     }
 }
 
@@ -613,7 +909,7 @@ fun AppTile(app: ResolveInfo, context: Context, modifier: Modifier, onClick: () 
                 .graphicsLayer { scaleX = scale; scaleY = scale }
                 .clip(shape)
                 .background(Tile)
-                .border(2.dp, if (isFocused) Accent else Color.Transparent, shape)
+                .border(2.dp, if (isFocused) TextMain else Color.Transparent, shape)
                 .clickable(interactionSource = src, indication = null) { onClick() },
             contentAlignment = Alignment.Center
         ) {
