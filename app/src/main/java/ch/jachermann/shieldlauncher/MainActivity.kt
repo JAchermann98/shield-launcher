@@ -257,6 +257,8 @@ fun HomeRoot(repo: PlexRepo, resumeCount: Int, homeCount: Int) {
     var lastRefresh by remember { mutableLongStateOf(0L) }
     val focusState = remember { mutableStateOf(rows.firstOrNull()?.items?.firstOrNull()) }
     var tab by remember { mutableStateOf(Tab.START) }
+    val tabState = rememberUpdatedState(tab)
+    val tabFirst = remember { mutableStateMapOf<Tab, PlexItem>() }
     var focusedRow by remember { mutableIntStateOf(0) }
     var libScrolled by remember { mutableStateOf(false) }
     var showApps by remember { mutableStateOf(false) }
@@ -366,7 +368,7 @@ fun HomeRoot(repo: PlexRepo, resumeCount: Int, homeCount: Int) {
     // Bei Serien/Staffeln Qualität und Ton aus einer Folge nachladen
     val serversState = rememberUpdatedState(servers)
     val mediaCache = remember { mutableMapOf<String, Pair<String, String>>() }
-    val onFocusItem: (PlexItem) -> Unit = remember {
+    val onFocusItemBase: (PlexItem) -> Unit = remember {
         { item ->
             focusState.value = item
             if ((item.type == "show" || item.type == "season") && item.audio.isEmpty() && !item.fromWatchlist) {
@@ -402,6 +404,12 @@ fun HomeRoot(repo: PlexRepo, resumeCount: Int, homeCount: Int) {
     ) {
         Backdrop(focusState, dim = gridMode)
 
+        // Beim Reiterwechsel gleich das Bild der neuen Seite zeigen, nicht das der alten Auswahl
+        LaunchedEffect(tab) {
+            val first = if (tab == Tab.START) rows.firstOrNull()?.items?.firstOrNull() else tabFirst[tab]
+            focusState.value = first
+        }
+
         // Weicher Seitenwechsel: neue Seite gleitet aus der Wechselrichtung herein und blendet auf,
         // die alte blendet zügig aus und rückt leicht zur Seite
         AnimatedContent(
@@ -418,6 +426,15 @@ fun HomeRoot(repo: PlexRepo, resumeCount: Int, homeCount: Int) {
             label = "tabs"
         ) { t ->
             val active = t == tab
+            // Nur die sichtbare Seite darf das Hintergrundbild setzen
+            val onFocusItem: (PlexItem) -> Unit = remember(t) {
+                { item ->
+                    if (t == tabState.value) {
+                        if (t != Tab.START && t != Tab.YTSEARCH && tabFirst[t] == null) tabFirst[t] = item
+                        onFocusItemBase(item)
+                    }
+                }
+            }
             when (t) {
                 Tab.START -> StartScreen(
                     rows = rows,
@@ -1086,7 +1103,7 @@ private fun LibraryScreen(
     }
 
     // Beim Öffnen gleich ein passendes Bild zeigen (ohne die Auswahl aus dem Reiter zu holen)
-    LaunchedEffect(type, newest.isNotEmpty() || all.isNotEmpty()) {
+    LaunchedEffect(type, active, newest.isNotEmpty() || all.isNotEmpty()) {
         if (active) (newest.firstOrNull() ?: all.firstOrNull())?.let { onFocusItem(it) }
     }
 
@@ -1425,7 +1442,7 @@ private fun YouTubeScreen(
         }
     }
     // Beim Öffnen das erste Video als Hintergrund zeigen
-    LaunchedEffect(rows.isNotEmpty()) {
+    LaunchedEffect(active, rows.isNotEmpty()) {
         if (active) rows.firstOrNull()?.items?.firstOrNull()?.let { onFocusItem(it) }
     }
 
