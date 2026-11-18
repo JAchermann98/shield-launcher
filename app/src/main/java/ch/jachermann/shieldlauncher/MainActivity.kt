@@ -103,6 +103,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.coerceAtLeast
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -235,7 +236,19 @@ fun HomeRoot(repo: PlexRepo, resumeCount: Int, homeCount: Int) {
     var libScrolled by remember { mutableStateOf(false) }
     var showApps by remember { mutableStateOf(false) }
     val bridge = remember { FocusBridge() }
-    val topReq = remember { listOf("plex", "yt", "apps", "start", "filme", "serien", "update", "settings").associateWith { FocusRequester() } }
+    val topReq = remember { listOf("plex", "yt", "apps", "start", "filme", "serien", "view", "update", "settings").associateWith { FocusRequester() } }
+    // Ansicht für Filme/Serien: Bildansicht (false) oder Rasteransicht (true), getrennt gemerkt
+    val uiPrefs = remember { context.getSharedPreferences("launcher_ui", Context.MODE_PRIVATE) }
+    var gridMovies by remember { mutableStateOf(uiPrefs.getBoolean("grid_movie", false)) }
+    var gridShows by remember { mutableStateOf(uiPrefs.getBoolean("grid_show", false)) }
+    val gridMode = when (tab) { Tab.FILME -> gridMovies; Tab.SERIEN -> gridShows; else -> false }
+    val toggleView: () -> Unit = {
+        when (tab) {
+            Tab.FILME -> { gridMovies = !gridMovies; uiPrefs.edit().putBoolean("grid_movie", gridMovies).apply() }
+            Tab.SERIEN -> { gridShows = !gridShows; uiPrefs.edit().putBoolean("grid_show", gridShows).apply() }
+            else -> {}
+        }
+    }
     var lastTop by remember { mutableStateOf<String?>(null) }
     // Nur beim Start der App bzw. nach der Home-Taste springt die Auswahl automatisch in die Zeilen
     var autoFocusStart by remember { mutableStateOf(true) }
@@ -346,8 +359,15 @@ fun HomeRoot(repo: PlexRepo, resumeCount: Int, homeCount: Int) {
     val topBarVisible = if (tab == Tab.START) focusedRow == 0 else !libScrolled
     val topAlpha by animateFloatAsState(if (topBarVisible) 1f else 0f, tween(300), label = "topAlpha")
 
-    Box(Modifier.fillMaxSize()) {
-        Backdrop(focusState, dim = false)
+    Box(
+        Modifier.fillMaxSize().onPreviewKeyEvent { ev ->
+            val ne = ev.nativeKeyEvent
+            if (ne.action == AndroidKeyEvent.ACTION_DOWN && ne.keyCode == AndroidKeyEvent.KEYCODE_MENU && tab != Tab.START) {
+                toggleView(); true
+            } else false
+        }
+    ) {
+        Backdrop(focusState, dim = gridMode)
 
         // Weicher Seitenwechsel: neue Seite gleitet aus der Wechselrichtung herein und blendet auf,
         // die alte blendet zügig aus und rückt leicht zur Seite
@@ -378,8 +398,8 @@ fun HomeRoot(repo: PlexRepo, resumeCount: Int, homeCount: Int) {
                     autoFocus = autoFocusStart,
                     onAutoFocused = { autoFocusStart = false }
                 )
-                Tab.FILME -> LibraryScreen(repo, servers, "movie", "Alle Filme", focusState, onFocusItem, openItem, bridge, active) { libScrolled = it }
-                Tab.SERIEN -> LibraryScreen(repo, servers, "show", "Alle Serien", focusState, onFocusItem, openItem, bridge, active) { libScrolled = it }
+                Tab.FILME -> LibraryScreen(repo, servers, "movie", "Alle Filme", focusState, onFocusItem, openItem, bridge, active, gridMovies) { libScrolled = it }
+                Tab.SERIEN -> LibraryScreen(repo, servers, "show", "Alle Serien", focusState, onFocusItem, openItem, bridge, active, gridShows) { libScrolled = it }
             }
         }
 
@@ -394,7 +414,9 @@ fun HomeRoot(repo: PlexRepo, resumeCount: Int, homeCount: Int) {
                 onApps = { showApps = true },
                 reqs = topReq,
                 onFocused = { lastTop = it },
-                onDown = { bridge.toContent() }
+                onDown = { bridge.toContent() },
+                gridMode = gridMode,
+                onToggleView = toggleView
             )
         }
 
@@ -448,7 +470,9 @@ private fun TopBar(
     onApps: () -> Unit,
     reqs: Map<String, FocusRequester>,
     onFocused: (String) -> Unit,
-    onDown: () -> Unit
+    onDown: () -> Unit,
+    gridMode: Boolean,
+    onToggleView: () -> Unit
 ) {
     fun m(k: String): Modifier = Modifier.focusRequester(reqs.getValue(k)).onFocusChanged { if (it.isFocused) onFocused(k) }
     val context = LocalContext.current
@@ -487,6 +511,13 @@ private fun TopBar(
         TabButton("Filme", tab == Tab.FILME, m("filme")) { onTab(Tab.FILME) }
         Spacer(Modifier.width(4.dp))
         TabButton("Serien", tab == Tab.SERIEN, m("serien")) { onTab(Tab.SERIEN) }
+        // Umschalter Bild-/Rasteransicht, nur bei Filme und Serien
+        if (tab != Tab.START) {
+            Spacer(Modifier.width(8.dp))
+            IconButton(dot = false, modifier = m("view"), onClick = onToggleView) { color ->
+                if (gridMode) ImageViewIcon(color) else GridIcon(color)
+            }
+        }
         Spacer(Modifier.width(22.dp))
         Box(Modifier.width(1.dp).height(20.dp).background(Color.White.copy(alpha = 0.25f)))
         Spacer(Modifier.width(16.dp))
@@ -584,6 +615,32 @@ private fun IconButton(dot: Boolean, modifier: Modifier, onClick: () -> Unit, ic
         }
         if (dot) {
             Box(Modifier.align(Alignment.TopEnd).size(9.dp).clip(RoundedCornerShape(50)).background(Color(0xFF7FB2FF)))
+        }
+    }
+}
+
+/** Raster-Symbol (vier Kacheln): wechselt zur Rasteransicht. */
+@Composable
+private fun GridIcon(color: Color) {
+    Canvas(Modifier.size(15.dp)) {
+        val g = size.width * 0.14f
+        val c = (size.width - g) / 2
+        for (x in 0..1) for (y in 0..1) {
+            drawRoundRect(color, Offset(x * (c + g), y * (c + g)), androidx.compose.ui.geometry.Size(c, c), androidx.compose.ui.geometry.CornerRadius(c * 0.2f))
+        }
+    }
+}
+
+/** Bild-Symbol (Rahmen mit grossem Bild und Leiste): wechselt zur Bildansicht. */
+@Composable
+private fun ImageViewIcon(color: Color) {
+    Canvas(Modifier.size(16.dp)) {
+        val w = size.width
+        val h = size.height
+        drawRoundRect(color, Offset(0f, h * 0.08f), androidx.compose.ui.geometry.Size(w, h * 0.56f), androidx.compose.ui.geometry.CornerRadius(w * 0.1f))
+        val bw = (w - w * 0.2f) / 3
+        for (i in 0..2) {
+            drawRoundRect(color, Offset(i * (bw + w * 0.1f), h * 0.72f), androidx.compose.ui.geometry.Size(bw, h * 0.22f), androidx.compose.ui.geometry.CornerRadius(w * 0.06f))
         }
     }
 }
@@ -916,7 +973,8 @@ private fun LandscapeCard(
 // ---------------------------------------------------------------- Filme / Serien
 
 // Layout der Filme-/Serien-Seite (dp): oben Bild und Infos, unten das Fenster mit den Reihen
-private const val LIB_WINDOW_TOP = 232
+private const val LIB_WINDOW_TOP_IMAGE = 300 // Bildansicht: wie auf der Startseite
+private const val LIB_WINDOW_TOP_GRID = 70   // Rasteransicht: Reihen direkt unter der Kopfzeile
 private const val LIB_COLS = 7
 private const val LIB_NEW_H = 152        // Höhe der Neu-Reihe
 private const val LIB_FIRST_POSTER_H = 216 // erste Posterreihe inkl. Überschrift
@@ -933,9 +991,16 @@ private fun LibraryScreen(
     openItem: (PlexItem, Boolean) -> Unit,
     bridge: FocusBridge,
     active: Boolean,
+    gridMode: Boolean,
     onScrolled: (Boolean) -> Unit
 ) {
     val scope = rememberCoroutineScope()
+    val windowTop by animateDpAsState(
+        (if (gridMode) LIB_WINDOW_TOP_GRID else LIB_WINDOW_TOP_IMAGE).dp,
+        tween(480, easing = FastOutSlowInEasing),
+        label = "windowTop"
+    )
+    val heroAlpha by animateFloatAsState(if (gridMode) 0f else 1f, tween(300), label = "heroAlpha")
     val cached = remember(type) { repo.loadLibraryCache(type) }
     var newest by remember(type) { mutableStateOf(cached.first) }
     var all by remember(type) { mutableStateOf(cached.second) }
@@ -1009,24 +1074,25 @@ private fun LibraryScreen(
     Box(Modifier.fillMaxSize()) {
         // Untere Hälfte dunkler, damit die Poster gut lesbar sind
         Box(
-            Modifier.fillMaxSize().padding(top = (LIB_WINDOW_TOP - 60).dp).background(
+            Modifier.fillMaxSize().padding(top = (windowTop - 60.dp).coerceAtLeast(0.dp)).background(
                 Brush.verticalGradient(0f to Color.Transparent, 0.25f to Bg.copy(alpha = 0.7f), 1f to Bg.copy(alpha = 0.92f))
             )
         )
 
         // Infos zum ausgewählten Titel
         Box(
-            Modifier.offset(x = 48.dp, y = 62.dp).width(470.dp).height((LIB_WINDOW_TOP - 62 - 12).dp),
+            Modifier.offset(x = 48.dp, y = 62.dp).width(470.dp).height((LIB_WINDOW_TOP_IMAGE - 62 - 12).dp)
+                .graphicsLayer { alpha = heroAlpha },
             contentAlignment = Alignment.BottomStart
         ) {
-            Hero(focusState, if (loading) "Lade Mediathek …" else "", compact = true)
+            Hero(focusState, if (loading) "Lade Mediathek …" else "")
         }
 
         // Fenster mit den Reihen
         Box(
             Modifier
                 .fillMaxSize()
-                .padding(top = LIB_WINDOW_TOP.dp)
+                .padding(top = windowTop)
                 .clipToBounds()
                 .onPreviewKeyEvent { ev ->
                     val ne = ev.nativeKeyEvent
