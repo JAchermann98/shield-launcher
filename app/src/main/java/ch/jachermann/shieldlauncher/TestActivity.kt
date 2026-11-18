@@ -93,6 +93,10 @@ class TestActivity : Activity() {
         addButton("Nächsten Titel auswählen") { nextItem() }
         addButton("Test F: direkt abspielen (neu)") { testF() }
         addButton("Test G: Detailseite öffnen (neu)") { testG() }
+        addButton("V1: Detailseite + CLEAR_TOP") { testV(Intent.FLAG_ACTIVITY_CLEAR_TOP, "V1") }
+        addButton("V2: Detailseite + CLEAR_TOP + SINGLE_TOP") { testV(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP, "V2") }
+        addButton("V3: erst Plex-Start, dann Detailseite") { testV3() }
+        addButton("V4: Neustart (CLEAR_TASK)") { testV(Intent.FLAG_ACTIVITY_CLEAR_TASK, "V4") }
         addButton("Test A: plex://server Link") { testA() }
         addButton("Test B: app.plex.tv Link") { testB() }
         addButton("Test C: plex://play") { testC() }
@@ -314,6 +318,53 @@ class TestActivity : Activity() {
     }
 
     private fun metaKey() = "/library/metadata/$selRatingKey"
+
+    private fun detailsLink(): String {
+        val tv = if (selType == "show") "tv/" else ""
+        return "plex://libraries/${enc(selServerId!!)}/unmatched/$tv${enc(metaKey())}"
+    }
+
+    /** Detailseite mit zusätzlichen Intent-Flags öffnen. */
+    private fun testV(extraFlags: Int, label: String) {
+        if (!requireSelection()) return
+        val uri = detailsLink()
+        log("--- $label ---")
+        try {
+            val i = Intent(Intent.ACTION_VIEW, Uri.parse(uri))
+            plexPackage()?.let { i.setPackage(it) }
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or extraFlags)
+            startActivity(i)
+            log("Gestartet. Öffnet Plex '$selTitle'?")
+        } catch (e: Exception) {
+            log("Fehler: ${e.javaClass.simpleName}: ${e.message}")
+        }
+    }
+
+    /** Erst Plex normal nach vorne holen, kurz danach den Link schicken. */
+    private fun testV3() {
+        if (!requireSelection()) return
+        val uri = detailsLink()
+        log("--- V3 ---")
+        try {
+            val pkg = plexPackage() ?: return
+            val start = packageManager.getLeanbackLaunchIntentForPackage(pkg) ?: packageManager.getLaunchIntentForPackage(pkg) ?: return
+            start.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            startActivity(start)
+            logView.postDelayed({
+                try {
+                    val i = Intent(Intent.ACTION_VIEW, Uri.parse(uri))
+                    i.setPackage(pkg)
+                    i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    startActivity(i)
+                    log("Link geschickt. Öffnet Plex '$selTitle'?")
+                } catch (e: Exception) {
+                    log("Link-Fehler: ${e.javaClass.simpleName}: ${e.message}")
+                }
+            }, 700)
+        } catch (e: Exception) {
+            log("Fehler: ${e.javaClass.simpleName}: ${e.message}")
+        }
+    }
 
     private fun nextItem() {
         if (items.isEmpty()) {
