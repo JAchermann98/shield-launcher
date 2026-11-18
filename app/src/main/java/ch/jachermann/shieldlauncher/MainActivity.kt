@@ -81,6 +81,7 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -316,7 +317,31 @@ fun HomeRoot(repo: PlexRepo, resumeCount: Int, homeCount: Int) {
             }
         }
     }
-    val onFocusItem: (PlexItem) -> Unit = remember { { focusState.value = it } }
+    // Bei Serien/Staffeln Qualität und Ton aus einer Folge nachladen
+    val serversState = rememberUpdatedState(servers)
+    val mediaCache = remember { mutableMapOf<String, Pair<String, String>>() }
+    val onFocusItem: (PlexItem) -> Unit = remember {
+        { item ->
+            focusState.value = item
+            if ((item.type == "show" || item.type == "season") && item.audio.isEmpty() && !item.fromWatchlist) {
+                val k = "${item.serverId}/${item.ratingKey}"
+                val cachedMedia = mediaCache[k]
+                if (cachedMedia != null) {
+                    focusState.value = item.copy(resolution = cachedMedia.first.ifEmpty { item.resolution }, audio = cachedMedia.second)
+                } else {
+                    scope.launch {
+                        delay(250)
+                        if (focusState.value?.ratingKey != item.ratingKey) return@launch
+                        val m = repo.leafMedia(item, serversState.value) ?: return@launch
+                        mediaCache[k] = m
+                        if (focusState.value?.ratingKey == item.ratingKey) {
+                            focusState.value = item.copy(resolution = m.first.ifEmpty { item.resolution }, audio = m.second)
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     val topBarVisible = if (tab == Tab.START) focusedRow == 0 else !libScrolled
     val topAlpha by animateFloatAsState(if (topBarVisible) 1f else 0f, tween(300), label = "topAlpha")
@@ -693,7 +718,13 @@ fun Hero(focusState: MutableState<PlexItem?>, status: String, compact: Boolean =
         BasicText(status, style = TextStyle(color = TextSoft, fontSize = 16.sp))
         return
     }
-    Crossfade(targetState = item, animationSpec = tween(260), label = "hero", modifier = Modifier.fillMaxSize()) { cur ->
+    Crossfade(
+        targetState = item,
+        animationSpec = tween(260),
+        label = "hero",
+        modifier = Modifier.fillMaxSize(),
+        contentKey = { "${it.serverId}/${it.ratingKey}" }
+    ) { cur ->
         Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Bottom) {
             TitleOrLogo(cur, if (compact) 62.dp else 84.dp)
             if (cur.subtitle.isNotEmpty()) {

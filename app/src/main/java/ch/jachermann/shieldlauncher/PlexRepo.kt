@@ -339,14 +339,28 @@ class PlexRepo(context: Context) {
         val recent = mutableListOf<PlexItem>()
         for (sec in sections(servers).filter { it.type == type }) {
             try {
-                all += list(sec.server, "/library/sections/${sec.key}/all?sort=titleSort", size = 10000)
-                recent += list(sec.server, "/library/sections/${sec.key}/recentlyAdded", size = 20)
+                // Serien haben selbst keine Qualitätsangabe: aus einer 4K-Mediathek gilt 4K als Hinweis
+                val is4k = sec.title.lowercase().contains("4k")
+                fun hint(i: PlexItem) = if (is4k && i.resolution.isEmpty()) i.copy(resolution = "4K") else i
+                all += list(sec.server, "/library/sections/${sec.key}/all?sort=titleSort", size = 10000).map { hint(it) }
+                recent += list(sec.server, "/library/sections/${sec.key}/recentlyAdded", size = 20).map { hint(it) }
             } catch (e: Exception) {
             }
         }
         val newest = dedupe(recent.sortedByDescending { it.addedAt }).take(20)
         val sorted = dedupe(all).sortedBy { it.titleSort.lowercase(Locale.GERMANY) }
         Pair(newest, sorted)
+    }
+
+    /** Qualität und Ton einer Serie/Staffel anhand der ersten Folge. */
+    suspend fun leafMedia(item: PlexItem, servers: List<PlexServer>): Pair<String, String>? = withContext(Dispatchers.IO) {
+        val s = servers.firstOrNull { it.id == item.serverId } ?: return@withContext null
+        try {
+            val e = list(s, "/library/metadata/${item.ratingKey}/allLeaves", size = 1).firstOrNull() ?: return@withContext null
+            Pair(e.resolution, e.audio)
+        } catch (ex: Exception) {
+            null
+        }
     }
 
     // ---------- Watchlist ----------
