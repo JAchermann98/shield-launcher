@@ -898,13 +898,7 @@ private fun LibraryScreen(
         }
         loading = false
     }
-    var didFocus by remember(type) { mutableStateOf(false) }
-    LaunchedEffect(type, newest.isNotEmpty() || all.isNotEmpty()) {
-        if (!didFocus && (newest.isNotEmpty() || all.isNotEmpty())) {
-            delay(150)
-            try { firstFocus.requestFocus(); didFocus = true } catch (e: Exception) { }
-        }
-    }
+    // Kein automatischer Fokus: die Auswahl bleibt im Reiter, bis man selbst nach unten drückt
 
     LaunchedEffect(gridState) {
         // Kopfzeile ausblenden, sobald überhaupt gescrollt ist, sonst liegt sie über der Neu-Zeile
