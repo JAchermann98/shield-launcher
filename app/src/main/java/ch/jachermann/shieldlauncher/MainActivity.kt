@@ -105,6 +105,7 @@ import coil.request.ImageRequest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -868,11 +869,15 @@ private fun LibraryScreen(
     val requesters = remember(type) { mutableStateMapOf<Int, FocusRequester>() }
     val pivot = rememberPivotSpec(8.dp)
     val density = LocalDensity.current
+    // Solange die Neu-Zeile den Fokus hat, scrollt das Raster nicht selbst,
+    // sondern fährt komplett nach oben (siehe onFocusChanged der Neu-Zeile).
+    val newRowFocused = remember(type) { booleanArrayOf(false) }
     val gridSpec = remember(density) {
         val topPx = with(density) { 64.dp.toPx() }
         val bottomPx = with(density) { 24.dp.toPx() }
         object : BringIntoViewSpec {
             override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float): Float = when {
+                newRowFocused[0] -> 0f
                 offset < topPx -> offset - topPx
                 offset + size > containerSize - bottomPx -> offset + size - (containerSize - bottomPx)
                 else -> 0f
@@ -902,7 +907,10 @@ private fun LibraryScreen(
     }
 
     LaunchedEffect(gridState) {
-        snapshotFlow { gridState.firstVisibleItemIndex > 0 }.collect { onScrolled(it) }
+        // Kopfzeile ausblenden, sobald überhaupt gescrollt ist, sonst liegt sie über der Neu-Zeile
+        snapshotFlow { gridState.firstVisibleItemIndex > 0 || gridState.firstVisibleItemScrollOffset > 0 }
+            .distinctUntilChanged()
+            .collect { onScrolled(it) }
     }
 
     val letters = remember(all) { listOf("#") + ('A'..'Z').map { it.toString() } }
@@ -953,7 +961,12 @@ private fun LibraryScreen(
             item(span = { GridItemSpan(maxLineSpan) }) {
                 Column(
                     Modifier
-                        .onFocusChanged { if (it.hasFocus && gridState.firstVisibleItemIndex > 0 || it.hasFocus && gridState.firstVisibleItemScrollOffset > 0) scope.launch { gridState.animateScrollToItem(0) } }
+                        .onFocusChanged {
+                            newRowFocused[0] = it.hasFocus
+                            if (it.hasFocus && (gridState.firstVisibleItemIndex > 0 || gridState.firstVisibleItemScrollOffset > 0)) {
+                                scope.launch { gridState.animateScrollToItem(0) }
+                            }
+                        }
                         .onPreviewKeyEvent { ev ->
                             val ne = ev.nativeKeyEvent
                             if (ne.action == AndroidKeyEvent.ACTION_DOWN && ne.keyCode == AndroidKeyEvent.KEYCODE_DPAD_UP) { bridge.toTop(); true } else false
