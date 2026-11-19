@@ -163,6 +163,35 @@ class YouTubeRepo(context: Context) {
 
     private fun browse(browseId: String): JSONObject? = innertube("browse", "browseId", browseId)
 
+    /** Letzter Fehler der Suche, wird im Launcher angezeigt. */
+    var lastSearchInfo = ""
+        private set
+
+    /** Anfrage mit dem Web-Client ohne Anmeldung (für die Suche über ganz YouTube). */
+    private fun innertubeWeb(endpoint: String, key: String, value: String): Pair<Int, JSONObject?> {
+        val body = JSONObject()
+            .put("context", JSONObject().put("client", JSONObject()
+                .put("clientName", "WEB")
+                .put("clientVersion", WEB_VERSION)
+                .put("hl", "de")
+                .put("gl", "CH")))
+            .put(key, value)
+        val (code, text) = request(
+            "POST", "https://www.youtube.com/youtubei/v1/$endpoint?prettyPrint=false",
+            mapOf(
+                "Content-Type" to "application/json",
+                "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36",
+                "X-YouTube-Client-Name" to "1",
+                "X-YouTube-Client-Version" to WEB_VERSION,
+                "Origin" to "https://www.youtube.com"
+            ),
+            body.toString()
+        )
+        return Pair(code, if (code in 200..299) try { JSONObject(text) } catch (e: Exception) { null } else null)
+    }
+
+    private var lastCode = 0
+
     private fun innertube(endpoint: String, key: String, value: String): JSONObject? {
         val token = accessToken() ?: return null
         val body = JSONObject()
@@ -183,6 +212,7 @@ class YouTubeRepo(context: Context) {
             ),
             body.toString()
         )
+        lastCode = code
         if (code !in 200..299) return null
         return try { JSONObject(text) } catch (e: Exception) { null }
     }
@@ -245,12 +275,62 @@ class YouTubeRepo(context: Context) {
         )
     }
 
+    private fun thumbOf(arr: JSONArray?, videoId: String): String {
+        var t = arr?.optJSONObject(arr.length() - 1)?.optString("url")?.takeIf { it.isNotEmpty() }
+            ?: "https://i.ytimg.com/vi/$videoId/hqdefault.jpg"
+        if (t.startsWith("//")) t = "https:$t"
+        return t
+    }
+
+    private fun simpleItem(videoId: String, title: String, channel: String, info: String, thumb: String) = PlexItem(
+        serverId = "youtube", ratingKey = videoId, type = "youtube", title = title, subtitle = channel,
+        year = "", durationMs = 0, viewOffsetMs = 0, posterUrl = thumb, landscapeUrl = thumb, backdropUrl = thumb,
+        resolution = "", audio = "", summary = listOf(channel, info).filter { it.isNotEmpty() }.joinToString("  ·  ")
+    )
+
+    /** Web-Format: videoRenderer, compactVideoRenderer, gridVideoRenderer */
+    private fun videoRendererToItem(v: JSONObject): PlexItem? {
+        val id = v.optString("videoId").ifEmpty { return null }
+        val title = text(v.opt("title")).ifEmpty { text(v.opt("headline")) }.ifEmpty { return null }
+        val channel = text(v.opt("ownerText")).ifEmpty { text(v.opt("shortBylineText")) }.ifEmpty { text(v.opt("longBylineText")) }
+        val info = listOf(text(v.opt("viewCountText")).ifEmpty { text(v.opt("shortViewCountText")) },
+            text(v.opt("publishedTimeText")), text(v.opt("lengthText"))).filter { it.isNotEmpty() }.joinToString(" · ")
+        return simpleItem(id, title, channel, info, thumbOf(v.optJSONObject("thumbnail")?.optJSONArray("thumbnails"), id))
+    }
+
+    /** Neues Format: lockupViewModel */
+    private fun lockupToItem(l: JSONObject): PlexItem? {
+        if (l.optString("contentType").let { it.isNotEmpty() && it != "LOCKUP_CONTENT_TYPE_VIDEO" }) return null
+        val id = l.optString("contentId").ifEmpty { (findKey(l, "videoId") as? String) ?: return null }
+        val meta = l.optJSONObject("metadata")?.optJSONObject("lockupMetadataViewModel")
+        val title = meta?.optJSONObject("title")?.optString("content").orEmpty().ifEmpty { return null }
+        val parts = mutableListOf<String>()
+        (findKey(meta, "metadataRows") as? JSONArray)?.let { rows ->
+            for (i in 0 until rows.length()) {
+                val ps = rows.optJSONObject(i)?.optJSONArray("metadataParts") ?: continue
+                for (j in 0 until ps.length()) ps.optJSONObject(j)?.optJSONObject("text")?.optString("content")
+                    ?.takeIf { it.isNotEmpty() }?.let { parts += it }
+            }
+        }
+        val sources = findKey(l.optJSONObject("contentImage"), "sources") as? JSONArray
+        return simpleItem(id, title, parts.firstOrNull() ?: "", parts.drop(1).joinToString(" · "), thumbOf(sources, id))
+    }
+
     private fun collectTiles(node: Any?, out: MutableList<PlexItem>) {
         when (node) {
             is JSONObject -> {
                 val tile = node.optJSONObject("tileRenderer")
                 if (tile != null) {
                     tileToItem(tile)?.let { out += it }
+                    return
+                }
+                for (key in listOf("videoRenderer", "compactVideoRenderer", "gridVideoRenderer")) {
+                    val v = node.optJSONObject(key) ?: continue
+                    videoRendererToItem(v)?.let { out += it }
+                    return
+                }
+                node.optJSONObject("lockupViewModel")?.let { l ->
+                    lockupToItem(l)?.let { out += it }
                     return
                 }
                 for (k in node.keys()) collectTiles(node.get(k), out)
@@ -286,7 +366,16 @@ class YouTubeRepo(context: Context) {
     /** Suche: liefert die gefundenen Videos. */
     suspend fun search(query: String): List<PlexItem> = withContext(Dispatchers.IO) {
         val out = mutableListOf<PlexItem>()
-        collectTiles(innertube("search", "query", query) ?: return@withContext emptyList(), out)
+        lastSearchInfo = ""
+        // 1. Über ganz YouTube mit dem Web-Client suchen (liefert die vollständigen Treffer)
+        val (webCode, web) = try { innertubeWeb("search", "query", query) } catch (e: Exception) { Pair(-1, null) }
+        if (web != null) collectTiles(web, out)
+        // 2. Falls das nichts bringt: Suche mit dem angemeldeten TV-Client
+        if (out.isEmpty()) {
+            val tv = try { innertube("search", "query", query) } catch (e: Exception) { null }
+            if (tv != null) collectTiles(tv, out)
+            if (out.isEmpty()) lastSearchInfo = "Web $webCode, TV $lastCode" + if (tv != null) ", Antwort ohne Videos" else ""
+        }
         out.distinctBy { it.ratingKey }.take(60)
     }
 
@@ -314,6 +403,7 @@ class YouTubeRepo(context: Context) {
 
     companion object {
         private const val SCOPE = "http://gdata.youtube.com https://www.googleapis.com/auth/youtube-paid-content"
+        private const val WEB_VERSION = "2.20251101.01.00"
         private const val CLIENT_VERSION = "7.20250923.13.00"
         private const val TV_UA = "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/25.lts.30.1034943-gold (unlike Gecko), Unknown_TV_Unknown_0/Unknown (Unknown, Unknown)"
         // Nur als Rückfall, falls das Auslesen aus youtube.com/tv scheitert (bekannte Werte der YouTube-TV-App)

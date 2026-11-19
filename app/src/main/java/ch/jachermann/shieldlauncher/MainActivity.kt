@@ -1545,7 +1545,7 @@ private fun YouTubeSearchScreen(
                 results = if (found.isEmpty()) emptyList() else found.chunked(12).mapIndexed { i, part ->
                     PlexRow(if (i == 0) "Ergebnisse für „$text“" else "Weitere Ergebnisse (${i + 1})", part, landscape = true, resume = false)
                 }
-                status = if (found.isEmpty()) "Nichts gefunden für „$text“" else ""
+                status = if (found.isEmpty()) "Nichts gefunden für „$text“" + (yt.lastSearchInfo.takeIf { it.isNotEmpty() }?.let { " ($it)" } ?: "") else ""
                 found.firstOrNull()?.let { onFocusItem(it) }
                 if (found.isNotEmpty()) {
                     delay(150)
