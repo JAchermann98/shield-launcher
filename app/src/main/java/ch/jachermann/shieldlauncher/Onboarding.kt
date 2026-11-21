@@ -69,17 +69,27 @@ enum class SetupStep(val title: String) {
  * (z. B. die Mediatheken-Auswahl aus den Einstellungen).
  */
 @Composable
-fun OnboardingFlow(repo: PlexRepo, start: SetupStep = SetupStep.WELCOME, onlyStep: Boolean = false, onDone: () -> Unit) {
+fun OnboardingFlow(
+    repo: PlexRepo,
+    start: SetupStep = SetupStep.WELCOME,
+    onlyStep: Boolean = false,
+    onCancel: (() -> Unit)? = null,
+    onDone: () -> Unit
+) {
     var step by remember { mutableStateOf(start) }
     fun next() {
         if (onlyStep || step == SetupStep.HOME) onDone()
         else step = SetupStep.entries[step.ordinal + 1]
     }
     fun back() {
-        if (onlyStep) onDone()
-        else if (step.ordinal > 0) step = SetupStep.entries[step.ordinal - 1]
+        when {
+            onlyStep -> onCancel?.invoke() ?: onDone()
+            step.ordinal > 0 -> step = SetupStep.entries[step.ordinal - 1]
+            else -> onCancel?.invoke() // beim ersten Einrichten bleibt man hier
+        }
     }
-    BackHandler(enabled = onlyStep || step.ordinal > 0) { back() }
+    // Immer aktiv: sonst würde Zurück den Launcher selbst schliessen
+    BackHandler(enabled = true) { back() }
 
     Box(Modifier.fillMaxSize().background(Bg)) {
         Column(Modifier.fillMaxSize().padding(horizontal = 96.dp, vertical = 40.dp)) {
@@ -266,7 +276,7 @@ private fun PlexStep(repo: PlexRepo, onNext: () -> Unit) {
                         val how = when (s.kind) {
                             "lokal" -> "im Heimnetz (schnellste Verbindung)"
                             "extern" -> "über das Internet"
-                            "Relay" -> "über Plex-Relay (langsamer, max. 2 Mbit/s)"
+                            "Relay" -> "über Plex-Relay (langsamer, reduzierte Qualität)"
                             else -> ""
                         }
                         InfoLine("✓  ${s.name}  ·  $how", TextMain)
@@ -322,8 +332,13 @@ private fun LibrariesStep(repo: PlexRepo, nextLabel: String, onNext: () -> Unit)
             }
             Spacer(Modifier.height(20.dp))
             val none = if (list.isEmpty()) rememberAutoFocus() else remember { FocusRequester() }
+            if (list.isNotEmpty() && selected.isEmpty()) {
+                InfoLine("Ohne Auswahl erscheinen auf der Startseite keine Neu-Reihen.", TextDim)
+                Spacer(Modifier.height(10.dp))
+            }
             SetupButton(nextLabel, Modifier.focusRequester(none)) {
-                repo.newSections = selected
+                // Ohne gefundene Mediatheken nichts speichern, damit später die Vorauswahl greift
+                if (list.isNotEmpty()) repo.newSections = selected
                 onNext()
             }
         }
@@ -380,7 +395,7 @@ private fun YouTubeStep(onNext: () -> Unit) {
 
     if (showLogin) {
         Column {
-            Box(Modifier.fillMaxWidth().height(300.dp)) {
+            Box(Modifier.fillMaxWidth().height(330.dp)) {
                 YouTubeLogin(yt) {
                     ytLoggedIn = true
                     showLogin = false
@@ -476,9 +491,9 @@ private fun HomeStep(onNext: () -> Unit) {
 @Composable
 fun SettingsOverlay(
     repo: PlexRepo,
-    onClose: () -> Unit,
     onRunSetup: () -> Unit,
     onLibraries: () -> Unit,
+    onYouTubeLogout: () -> Unit,
     onPlexLogout: () -> Unit
 ) {
     val context = LocalContext.current
@@ -492,7 +507,7 @@ fun SettingsOverlay(
     val servers = remember { repo.loadServers() }
 
     Box(Modifier.fillMaxSize().background(Bg.copy(alpha = 0.96f)), contentAlignment = Alignment.Center) {
-        Column(Modifier.width(560.dp)) {
+        Column(Modifier.width(560.dp).trapFocus()) {
             BasicText("Einstellungen", style = TextStyle(color = TextMain, fontSize = 26.sp, fontWeight = FontWeight.Bold))
             Spacer(Modifier.height(18.dp))
             SettingsRow("Einrichtung erneut starten", "Alle Schritte vom Anfang", "Starten", Modifier.focusRequester(first), onRunSetup)
@@ -502,13 +517,12 @@ fun SettingsOverlay(
             SettingsRow(
                 "YouTube",
                 if (ytLoggedIn) "Konto verbunden" else "Nicht verbunden (Anmeldung im YouTube-Bereich)",
-                if (ytLoggedIn) "Abmelden" else "–",
+                if (ytLoggedIn) "Abmelden" else null,
                 Modifier
             ) {
-                if (ytLoggedIn) {
-                    yt.logout()
-                    ytLoggedIn = false
-                }
+                yt.logout()
+                ytLoggedIn = false
+                onYouTubeLogout()
             }
             Spacer(Modifier.height(8.dp))
             SettingsRow(
@@ -530,7 +544,7 @@ fun SettingsOverlay(
 }
 
 @Composable
-private fun SettingsRow(name: String, status: String, action: String, buttonModifier: Modifier, onClick: () -> Unit) {
+private fun SettingsRow(name: String, status: String, action: String?, buttonModifier: Modifier, onClick: () -> Unit) {
     Row(
         Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(Tile).padding(horizontal = 18.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -541,7 +555,9 @@ private fun SettingsRow(name: String, status: String, action: String, buttonModi
             Spacer(Modifier.height(2.dp))
             BasicText(status, style = TextStyle(color = TextSoft, fontSize = 12.sp))
         }
-        Spacer(Modifier.width(12.dp))
-        PillButton(action, buttonModifier) { onClick() }
+        if (action != null) {
+            Spacer(Modifier.width(12.dp))
+            PillButton(action, buttonModifier) { onClick() }
+        }
     }
 }

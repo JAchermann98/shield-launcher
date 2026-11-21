@@ -119,7 +119,7 @@ fun UpdatesOverlay(onClose: () -> Unit) {
     }
 
     Box(Modifier.fillMaxSize().background(Bg.copy(alpha = 0.95f)), contentAlignment = Alignment.Center) {
-        Column(Modifier.width(560.dp)) {
+        Column(Modifier.width(560.dp).trapFocus()) {
             BasicText("Updates", style = TextStyle(color = TextMain, fontSize = 26.sp, fontWeight = FontWeight.Bold))
             Spacer(Modifier.height(20.dp))
             UpdateRow("Shield Launcher", launcherText, if (launcherUpdate != null) "Aktualisieren" else "Erneut prüfen", Modifier.focusRequester(first)) {

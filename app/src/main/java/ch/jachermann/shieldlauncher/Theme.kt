@@ -3,6 +3,11 @@
 package ch.jachermann.shieldlauncher
 
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.focusGroup
+import androidx.compose.ui.ExperimentalComposeUiApi
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
@@ -28,3 +33,7 @@ class FocusBridge {
 const val FOCUS_Y = 318
 const val ROW_STEP = 168
 const val PREV_Y = -118
+
+/** Hält den Fokus innerhalb eines Overlays, damit er nicht auf die Seite dahinter springt. */
+@OptIn(ExperimentalComposeUiApi::class)
+fun Modifier.trapFocus(): Modifier = this.focusProperties { exit = { FocusRequester.Cancel } }.focusGroup()

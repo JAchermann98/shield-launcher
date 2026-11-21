@@ -119,14 +119,18 @@ fun LauncherApp(repo: PlexRepo, resumeCount: Int, homeCount: Int) {
         )
     }
     var onlyStep by remember { mutableStateOf(false) }
+    var rerun by remember { mutableStateOf(false) }
     var session by remember { mutableIntStateOf(0) }
     Box(Modifier.fillMaxSize().background(Bg)) {
         val current = setup
         if (current != null) {
-            OnboardingFlow(repo, current, onlyStep) {
+            // Erneuter Durchlauf aus den Einstellungen lässt sich mit Zurück abbrechen
+            val cancel: (() -> Unit)? = if (rerun) ({ Setup.setDone(context, true); setup = null; onlyStep = false; rerun = false }) else null
+            OnboardingFlow(repo, current, onlyStep, cancel) {
                 Setup.setDone(context, true)
                 setup = null
                 onlyStep = false
+                rerun = false
                 session++
             }
         } else {
@@ -136,12 +140,15 @@ fun LauncherApp(repo: PlexRepo, resumeCount: Int, homeCount: Int) {
                     onSetup = { step, single ->
                         if (!single) Setup.setDone(context, false)
                         onlyStep = single
+                        rerun = true
                         setup = step
                     },
+                    onReload = { session++ },
                     onPlexLogout = {
                         repo.logout()
                         Setup.setDone(context, false)
                         onlyStep = false
+                        rerun = false
                         setup = SetupStep.PLEX
                     }
                 )
@@ -158,6 +165,7 @@ fun HomeRoot(
     resumeCount: Int,
     homeCount: Int,
     onSetup: (SetupStep, Boolean) -> Unit,
+    onReload: () -> Unit,
     onPlexLogout: () -> Unit
 ) {
     val context = LocalContext.current
@@ -419,9 +427,9 @@ fun HomeRoot(
         if (showSettings) {
             SettingsOverlay(
                 repo = repo,
-                onClose = { showSettings = false },
                 onRunSetup = { showSettings = false; onSetup(SetupStep.WELCOME, false) },
                 onLibraries = { showSettings = false; onSetup(SetupStep.LIBRARIES, true) },
+                onYouTubeLogout = onReload,
                 onPlexLogout = { showSettings = false; onPlexLogout() }
             )
         }
