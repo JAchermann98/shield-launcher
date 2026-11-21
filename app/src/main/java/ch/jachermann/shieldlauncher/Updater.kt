@@ -139,6 +139,7 @@ object Updater {
             context.startActivity(i)
             return false
         }
+        withContext(Dispatchers.IO) { File(context.cacheDir, "updates").listFiles()?.forEach { it.delete() } }
         val file = withContext(Dispatchers.IO) { download(url, File(File(context.cacheDir, "updates").apply { mkdirs() }, fileName), onProgress) }
         withContext(Dispatchers.IO) { commitInstall(context, file) }
         return true
@@ -217,6 +218,8 @@ object Updater {
             val pi = PendingIntent.getBroadcast(context, id, Intent(context, InstallReceiver::class.java), flags)
             session.commit(pi.intentSender)
         }
+        // Die Daten liegen jetzt in der Installer-Sitzung, die Datei wird nicht mehr gebraucht
+        apk.delete()
     }
 }
 

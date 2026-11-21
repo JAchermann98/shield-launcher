@@ -146,6 +146,7 @@ class YouTubeRepo(context: Context) {
         e.apply()
     }
 
+    @Synchronized
     private fun accessToken(): String? {
         val refresh = prefs.getString("refresh_token", null) ?: return null
         val token = prefs.getString("access_token", null)
@@ -155,7 +156,11 @@ class YouTubeRepo(context: Context) {
             "POST", "https://www.youtube.com/o/oauth2/token", formHeaders,
             form("client_id" to id, "client_secret" to secret, "refresh_token" to refresh, "grant_type" to "refresh_token")
         )
-        if (code !in 200..299) return null
+        if (code !in 200..299) {
+            // Zugriff wurde widerrufen oder ist abgelaufen: abmelden, damit die Anmeldung neu erscheint
+            if (text.contains("invalid_grant")) logout()
+            return null
+        }
         saveToken(JSONObject(text))
         return prefs.getString("access_token", null)
     }

@@ -126,7 +126,7 @@ class ScreensaverView(context: Context) : FrameLayout(context) {
     private fun tickClock() {
         if (!running) return
         clock.text = SimpleDateFormat("HH:mm", Locale.GERMANY).format(Date())
-        handler.postDelayed({ tickClock() }, 20_000)
+        handler.postDelayed({ tickClock() }, 60_000 - System.currentTimeMillis() % 60_000 + 50)
     }
 
     private fun next() {
