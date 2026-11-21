@@ -150,6 +150,6 @@ class FocusBridge {
 }
 
 // Layout der Startseite (in dp, Bildschirm 960 x 540)
-private const val FOCUS_Y = 318
-private const val ROW_STEP = 168
-private const val PREV_Y = -118
+const val FOCUS_Y = 318
+const val ROW_STEP = 168
+const val PREV_Y = -118

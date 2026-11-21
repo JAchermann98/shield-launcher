@@ -453,9 +453,9 @@ fun LandscapeCard(
 // ---------------------------------------------------------------- Filme / Serien
 
 // Layout der Filme-/Serien-Seite (dp): oben Bild und Infos, unten das Fenster mit den Reihen
-private const val LIB_WINDOW_TOP_IMAGE = 300 // Bildansicht: wie auf der Startseite
-private const val LIB_WINDOW_TOP_GRID = 70   // Rasteransicht: Reihen direkt unter der Kopfzeile
-private const val LIB_COLS = 7
-private const val LIB_NEW_H = 152        // Höhe der Neu-Reihe
-private const val LIB_FIRST_POSTER_H = 216 // erste Posterreihe inkl. Überschrift
-private const val LIB_POSTER_H = 194     // weitere Posterreihen
+const val LIB_WINDOW_TOP_IMAGE = 300 // Bildansicht: wie auf der Startseite
+const val LIB_WINDOW_TOP_GRID = 70   // Rasteransicht: Reihen direkt unter der Kopfzeile
+const val LIB_COLS = 7
+const val LIB_NEW_H = 152        // Höhe der Neu-Reihe
+const val LIB_FIRST_POSTER_H = 216 // erste Posterreihe inkl. Überschrift
+const val LIB_POSTER_H = 194     // weitere Posterreihen
