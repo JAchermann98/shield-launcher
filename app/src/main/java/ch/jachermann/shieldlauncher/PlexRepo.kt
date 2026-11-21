@@ -137,15 +137,24 @@ class PlexRepo(context: Context) {
             if (!r.optString("provides").contains("server")) continue
             val serverToken = r.optString("accessToken", token)
             val conns = r.optJSONArray("connections") ?: JSONArray()
-            val uris = mutableListOf<Pair<String, Boolean>>()
+            // Reihenfolge: lokal im selben Netz (schnell), dann direkt über Internet, zuletzt Relay.
+            // Wer den Server zuhause hat, bekommt so die lokale Adresse, alle anderen die externe.
+            data class Conn(val uri: String, val rank: Int)
+            val uris = mutableListOf<Conn>()
             for (j in 0 until conns.length()) {
                 val c = conns.getJSONObject(j)
-                uris.add(Pair(c.optString("uri"), c.optBoolean("relay")))
+                val rank = when {
+                    c.optBoolean("relay") -> 2
+                    c.optBoolean("local") -> 0
+                    else -> 1
+                }
+                uris.add(Conn(c.optString("uri"), rank))
             }
-            uris.sortBy { it.second }
-            for ((uri, _) in uris) {
+            uris.sortBy { it.rank }
+            for ((uri, rank) in uris) {
                 val ok = try {
-                    http("GET", "$uri/identity", headers(serverToken), 4000).first in 200..299
+                    // Lokale Adressen antworten sofort oder gar nicht
+                    http("GET", "$uri/identity", headers(serverToken), if (rank == 0) 2000 else 4000).first in 200..299
                 } catch (e: Exception) {
                     false
                 }
@@ -262,7 +271,7 @@ class PlexRepo(context: Context) {
     private fun list(s: PlexServer, path: String, size: Int = 30): List<PlexItem> {
         val sep = if (path.contains("?")) "&" else "?"
         val (code, body) = http("GET", "${s.base}$path${sep}X-Plex-Container-Start=0&X-Plex-Container-Size=$size&includeImages=1", headers(s.token))
-        if (code !in 200..299) return emptyList()
+        if (code !in 200..299) throw java.io.IOException("Plex ${s.name}: HTTP $code für $path")
         val arr = JSONObject(body).optJSONObject("MediaContainer")?.optJSONArray("Metadata") ?: return emptyList()
         return (0 until arr.length()).map { parse(s, arr.getJSONObject(it)) }
     }
@@ -281,6 +290,7 @@ class PlexRepo(context: Context) {
                     out += Section(s, d.optString("key"), d.optString("title"), d.optString("type"))
                 }
             } catch (e: Exception) {
+                logW(e)
             }
         }
         return out
@@ -299,16 +309,24 @@ class PlexRepo(context: Context) {
 
     // ---------- Startseite ----------
 
+    /** Anzahl Server, die beim letzten Laden nicht erreichbar waren. */
+    @Volatile var unreachableServers = 0
+        private set
+
     suspend fun loadRows(servers: List<PlexServer>): List<PlexRow> = withContext(Dispatchers.IO) {
         val onDeck = mutableListOf<PlexItem>()
         val recent = mutableListOf<PlexItem>()
+        var failed = 0
         for (s in servers) {
             try {
                 onDeck += list(s, "/library/onDeck")
                 recent += list(s, "/library/recentlyAdded")
             } catch (e: Exception) {
+                logW(e)
+                failed++
             }
         }
+        unreachableServers = failed
         val movies4k = mutableListOf<PlexItem>()
         val shows4k = mutableListOf<PlexItem>()
         for (sec in sections(servers)) {
@@ -319,6 +337,7 @@ class PlexRepo(context: Context) {
                     "show" -> shows4k += list(sec.server, "/library/sections/${sec.key}/recentlyAdded")
                 }
             } catch (e: Exception) {
+                logW(e)
             }
         }
         val rows = mutableListOf<PlexRow>()
@@ -345,6 +364,7 @@ class PlexRepo(context: Context) {
                 all += list(sec.server, "/library/sections/${sec.key}/all?sort=titleSort", size = 10000).map { hint(it) }
                 recent += list(sec.server, "/library/sections/${sec.key}/recentlyAdded", size = 20).map { hint(it) }
             } catch (e: Exception) {
+                logW(e)
             }
         }
         val newest = dedupe(recent.sortedByDescending { it.addedAt }).take(20)
@@ -410,6 +430,7 @@ class PlexRepo(context: Context) {
                 val found = list(s, "/library/all?guid=${enc(guid)}")
                 if (found.isNotEmpty()) return@withContext found.first()
             } catch (e: Exception) {
+                logW(e)
             }
         }
         null
@@ -474,6 +495,7 @@ class PlexRepo(context: Context) {
             }
             File(filesDir, name).writeText(arr.toString())
         } catch (e: Exception) {
+            logW(e)
         }
     }
 
@@ -495,6 +517,7 @@ class PlexRepo(context: Context) {
             val o = JSONObject().put("newest", itemsToJson(newest)).put("all", itemsToJson(all))
             File(filesDir, "library_$type.json").writeText(o.toString())
         } catch (e: Exception) {
+            logW(e)
         }
     }
 

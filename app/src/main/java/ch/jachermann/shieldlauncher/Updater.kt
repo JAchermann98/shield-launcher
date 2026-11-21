@@ -1,15 +1,19 @@
 package ch.jachermann.shieldlauncher
 
+import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageInstaller
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
-import androidx.core.content.FileProvider
+import android.widget.Toast
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
+import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 import java.text.SimpleDateFormat
@@ -48,7 +52,8 @@ object Updater {
     }
 
     /** true = Installation gestartet, false = Berechtigung fehlt (Einstellungen wurden geöffnet). */
-    suspend fun install(context: Context, update: Update): Boolean = installUrl(context, update.url, "update.apk")
+    suspend fun install(context: Context, update: Update, onProgress: (Int) -> Unit = {}): Boolean =
+        installUrl(context, update.url, "update.apk", onProgress)
 
     // ---------- SmartTube ----------
 
@@ -96,6 +101,7 @@ object Updater {
             }
             conn.disconnect()
         } catch (e: Exception) {
+            logW(e)
         }
         // 2. Versuch: Änderungsdatum der Datei selbst
         if (releaseAt == 0L) {
@@ -115,41 +121,123 @@ object Updater {
                 releaseAt = conn.lastModified
                 conn.disconnect()
             } catch (e: Exception) {
+                logW(e)
             }
         }
         SmartTubeStatus(pkg, installedAt, releaseAt, url)
     }
 
-    /** Lädt eine APK herunter und startet die Installation. */
-    suspend fun installUrl(context: Context, url: String, fileName: String): Boolean {
+    /**
+     * Lädt eine APK herunter und startet die Installation über den PackageInstaller.
+     * onProgress bekommt 0..100 (oder -1, wenn die Grösse unbekannt ist).
+     * true = Installationsfenster wird geöffnet, false = Berechtigung fehlt (Einstellungen wurden geöffnet).
+     */
+    suspend fun installUrl(context: Context, url: String, fileName: String, onProgress: (Int) -> Unit = {}): Boolean {
         if (Build.VERSION.SDK_INT >= 26 && !context.packageManager.canRequestPackageInstalls()) {
             val i = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${context.packageName}"))
             i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             context.startActivity(i)
             return false
         }
-        val file = withContext(Dispatchers.IO) {
-            val dir = File(context.cacheDir, "updates").apply { mkdirs() }
-            val f = File(dir, fileName)
-            var conn = URL(url).openConnection() as HttpURLConnection
-            conn.instanceFollowRedirects = true
-            // GitHub leitet auf einen anderen Host weiter
-            var redirects = 0
-            while (conn.responseCode in 300..399 && redirects < 5) {
-                val loc = conn.getHeaderField("Location")
-                conn.disconnect()
-                conn = URL(loc).openConnection() as HttpURLConnection
-                redirects++
-            }
-            conn.inputStream.use { input -> f.outputStream().use { input.copyTo(it) } }
-            conn.disconnect()
-            f
-        }
-        val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", file)
-        val i = Intent(Intent.ACTION_VIEW)
-        i.setDataAndType(uri, "application/vnd.android.package-archive")
-        i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
-        context.startActivity(i)
+        val file = withContext(Dispatchers.IO) { download(url, File(File(context.cacheDir, "updates").apply { mkdirs() }, fileName), onProgress) }
+        withContext(Dispatchers.IO) { commitInstall(context, file) }
         return true
+    }
+
+    private suspend fun download(url: String, target: File, onProgress: (Int) -> Unit): File {
+        var conn = open(url)
+        // GitHub leitet auf einen anderen Host weiter
+        var redirects = 0
+        while (conn.responseCode in 300..399 && redirects < 5) {
+            val loc = conn.getHeaderField("Location") ?: break
+            conn.disconnect()
+            conn = open(loc)
+            redirects++
+        }
+        val code = conn.responseCode
+        if (code !in 200..299) {
+            conn.disconnect()
+            throw IOException("Download fehlgeschlagen (HTTP $code)")
+        }
+        val total = conn.contentLengthLong
+        val tmp = File(target.parentFile, target.name + ".part")
+        var read = 0L
+        var lastPct = -2
+        try {
+            conn.inputStream.use { input ->
+                tmp.outputStream().use { out ->
+                    val buf = ByteArray(64 * 1024)
+                    while (true) {
+                        val n = input.read(buf)
+                        if (n < 0) break
+                        out.write(buf, 0, n)
+                        read += n
+                        val pct = if (total > 0) (read * 100 / total).toInt() else -1
+                        if (pct != lastPct) {
+                            lastPct = pct
+                            withContext(Dispatchers.Main) { onProgress(pct) }
+                        }
+                    }
+                }
+            }
+        } finally {
+            conn.disconnect()
+        }
+        // Unvollständige Datei nie installieren
+        if (read < 100_000 || (total > 0 && read != total)) {
+            tmp.delete()
+            throw IOException("Download unvollständig ($read von $total Bytes)")
+        }
+        target.delete()
+        if (!tmp.renameTo(target)) throw IOException("Datei konnte nicht gespeichert werden")
+        return target
+    }
+
+    private fun open(url: String): HttpURLConnection =
+        (URL(url).openConnection() as HttpURLConnection).apply {
+            instanceFollowRedirects = true
+            connectTimeout = 15000
+            readTimeout = 30000
+        }
+
+    /** Übergibt die APK an den PackageInstaller; das Bestätigungsfenster öffnet InstallReceiver. */
+    private fun commitInstall(context: Context, apk: File) {
+        val installer = context.packageManager.packageInstaller
+        val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL)
+        params.setSize(apk.length())
+        val id = installer.createSession(params)
+        installer.openSession(id).use { session ->
+            apk.inputStream().use { input ->
+                session.openWrite("base.apk", 0, apk.length()).use { out ->
+                    input.copyTo(out)
+                    session.fsync(out)
+                }
+            }
+            val flags = PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else 0)
+            val pi = PendingIntent.getBroadcast(context, id, Intent(context, InstallReceiver::class.java), flags)
+            session.commit(pi.intentSender)
+        }
+    }
+}
+
+/** Empfängt den Status der Installation und öffnet das Bestätigungsfenster sofort. */
+class InstallReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        when (intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE)) {
+            PackageInstaller.STATUS_PENDING_USER_ACTION -> {
+                @Suppress("DEPRECATION")
+                val confirm = intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT) ?: return
+                confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                try { context.startActivity(confirm) } catch (e: Exception) { logW(e) }
+            }
+            PackageInstaller.STATUS_SUCCESS -> {
+                Toast.makeText(context, "Installation abgeschlossen", Toast.LENGTH_SHORT).show()
+            }
+            PackageInstaller.STATUS_FAILURE_ABORTED -> { }
+            else -> {
+                val msg = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE) ?: "unbekannter Fehler"
+                Toast.makeText(context, "Installation fehlgeschlagen: $msg", Toast.LENGTH_LONG).show()
+            }
+        }
     }
 }

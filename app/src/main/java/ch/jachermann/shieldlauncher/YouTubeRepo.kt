@@ -79,6 +79,7 @@ class YouTubeRepo(context: Context) {
                 }
             }
         } catch (e: Exception) {
+            logW(e)
         }
         // Rückfall: zuletzt bekannte Werte
         if (id != null && secret != null) return Pair(id, secret)
@@ -390,14 +391,14 @@ class YouTubeRepo(context: Context) {
             used += t
             rows += PlexRow(t, items, landscape = true, resume = false)
         }
-        try { add("Neu in deinen Abos", tiles("FEsubscriptions")) } catch (e: Exception) { }
+        try { add("Neu in deinen Abos", tiles("FEsubscriptions")) } catch (e: Exception) { logW(e) }
         try {
             val shelves = mutableListOf<Pair<String, List<PlexItem>>>()
             collectShelves(browse("FEwhat_to_watch"), shelves)
             shelves.take(6).forEach { add(it.first, it.second) }
-        } catch (e: Exception) { }
-        try { add("Später ansehen", tiles("VLWL")) } catch (e: Exception) { }
-        try { add("Verlauf", tiles("FEhistory")) } catch (e: Exception) { }
+        } catch (e: Exception) { logW(e) }
+        try { add("Später ansehen", tiles("VLWL")) } catch (e: Exception) { logW(e) }
+        try { add("Verlauf", tiles("FEhistory")) } catch (e: Exception) { logW(e) }
         rows
     }
 
