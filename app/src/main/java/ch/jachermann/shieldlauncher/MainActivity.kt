@@ -34,6 +34,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.key
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
@@ -106,52 +107,45 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun LauncherApp(repo: PlexRepo, resumeCount: Int, homeCount: Int) {
-    var loggedIn by remember { mutableStateOf(repo.userToken != null) }
-    Box(Modifier.fillMaxSize().background(Bg)) {
-        if (!loggedIn) {
-            LoginScreen(repo) { loggedIn = true }
-        } else {
-            HomeRoot(repo, resumeCount, homeCount)
-        }
-    }
-}
-
-// ---------------------------------------------------------------- Anmeldung
-
-@Composable
-fun LoginScreen(repo: PlexRepo, onDone: () -> Unit) {
-    var code by remember { mutableStateOf<String?>(null) }
-    var error by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(Unit) {
-        try {
-            val (pinId, c) = repo.createPin()
-            code = c
-            val start = System.currentTimeMillis()
-            while (System.currentTimeMillis() - start < 10 * 60 * 1000) {
-                delay(2000)
-                if (repo.checkPin(pinId)) {
-                    onDone()
-                    return@LaunchedEffect
-                }
+    val context = LocalContext.current
+    // Bestehende Installationen mit Plex-Anmeldung gelten als eingerichtet
+    var setup by remember {
+        mutableStateOf(
+            when {
+                Setup.isDone(context) && repo.userToken != null -> null
+                repo.userToken != null -> { Setup.setDone(context, true); null }
+                else -> SetupStep.WELCOME
             }
-            error = "Zeit abgelaufen. Bitte die App neu starten."
-        } catch (e: Exception) {
-            error = "Keine Verbindung zu Plex: ${e.message}"
-        }
+        )
     }
-    Column(
-        Modifier.fillMaxSize().padding(48.dp),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        BasicText("Mit Plex verbinden", style = TextStyle(color = TextMain, fontSize = 32.sp, fontWeight = FontWeight.Bold))
-        Spacer(Modifier.height(16.dp))
-        BasicText("Öffne auf dem Handy plex.tv/link und gib diesen Code ein:", style = TextStyle(color = TextSoft, fontSize = 18.sp))
-        Spacer(Modifier.height(24.dp))
-        BasicText(code ?: "…", style = TextStyle(color = TextMain, fontSize = 56.sp, fontWeight = FontWeight.Bold, letterSpacing = 8.sp))
-        error?.let {
-            Spacer(Modifier.height(24.dp))
-            BasicText(it, style = TextStyle(color = Color(0xFFFFB4A8), fontSize = 16.sp))
+    var onlyStep by remember { mutableStateOf(false) }
+    var session by remember { mutableIntStateOf(0) }
+    Box(Modifier.fillMaxSize().background(Bg)) {
+        val current = setup
+        if (current != null) {
+            OnboardingFlow(repo, current, onlyStep) {
+                Setup.setDone(context, true)
+                setup = null
+                onlyStep = false
+                session++
+            }
+        } else {
+            key(session) {
+                HomeRoot(
+                    repo, resumeCount, homeCount,
+                    onSetup = { step, single ->
+                        if (!single) Setup.setDone(context, false)
+                        onlyStep = single
+                        setup = step
+                    },
+                    onPlexLogout = {
+                        repo.logout()
+                        Setup.setDone(context, false)
+                        onlyStep = false
+                        setup = SetupStep.PLEX
+                    }
+                )
+            }
         }
     }
 }
@@ -159,7 +153,13 @@ fun LoginScreen(repo: PlexRepo, onDone: () -> Unit) {
 // ---------------------------------------------------------------- Rahmen mit Kopfzeile und Seiten
 
 @Composable
-fun HomeRoot(repo: PlexRepo, resumeCount: Int, homeCount: Int) {
+fun HomeRoot(
+    repo: PlexRepo,
+    resumeCount: Int,
+    homeCount: Int,
+    onSetup: (SetupStep, Boolean) -> Unit,
+    onPlexLogout: () -> Unit
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
@@ -175,6 +175,7 @@ fun HomeRoot(repo: PlexRepo, resumeCount: Int, homeCount: Int) {
     var libScrolled by remember { mutableStateOf(false) }
     var showApps by remember { mutableStateOf(false) }
     var showUpdates by remember { mutableStateOf(false) }
+    var showSettings by remember { mutableStateOf(false) }
     val bridge = remember { FocusBridge() }
     val topReq = remember { listOf("plex", "yt", "apps", "start", "filme", "serien", "ytstart", "ytsearch", "view", "update", "settings").associateWith { FocusRequester() } }
     // Ansicht für Filme/Serien: Bildansicht (false) oder Rasteransicht (true), getrennt gemerkt
@@ -205,6 +206,7 @@ fun HomeRoot(repo: PlexRepo, resumeCount: Int, homeCount: Int) {
         if (homeCount > 0) {
             showApps = false
             showUpdates = false
+            showSettings = false
             val home = if (tab.isYouTube) Tab.YOUTUBE else Tab.START
             if (home == Tab.START) autoFocusStart = true
             if (tab != home) {
@@ -220,6 +222,7 @@ fun HomeRoot(repo: PlexRepo, resumeCount: Int, homeCount: Int) {
         when {
             showApps -> showApps = false
             showUpdates -> showUpdates = false
+            showSettings -> showSettings = false
             tab != Tab.START -> tab = Tab.START
         }
     }
@@ -402,7 +405,8 @@ fun HomeRoot(repo: PlexRepo, resumeCount: Int, homeCount: Int) {
                 onDown = { bridge.toContent() },
                 gridMode = gridMode,
                 onToggleView = toggleView,
-                onUpdates = { showUpdates = true }
+                onUpdates = { showUpdates = true },
+                onSettings = { showSettings = true }
             )
         }
 
@@ -411,6 +415,15 @@ fun HomeRoot(repo: PlexRepo, resumeCount: Int, homeCount: Int) {
         }
         if (showUpdates) {
             UpdatesOverlay(onClose = { showUpdates = false })
+        }
+        if (showSettings) {
+            SettingsOverlay(
+                repo = repo,
+                onClose = { showSettings = false },
+                onRunSetup = { showSettings = false; onSetup(SetupStep.WELCOME, false) },
+                onLibraries = { showSettings = false; onSetup(SetupStep.LIBRARIES, true) },
+                onPlexLogout = { showSettings = false; onPlexLogout() }
+            )
         }
     }
 }

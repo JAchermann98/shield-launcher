@@ -63,7 +63,8 @@ fun TopBar(
     onDown: () -> Unit,
     gridMode: Boolean,
     onToggleView: () -> Unit,
-    onUpdates: () -> Unit
+    onUpdates: () -> Unit,
+    onSettings: () -> Unit
 ) {
     fun m(k: String): Modifier = Modifier.focusRequester(reqs.getValue(k)).onFocusChanged { if (it.isFocused) onFocused(k) }
     val context = LocalContext.current
@@ -125,10 +126,7 @@ fun TopBar(
         Spacer(Modifier.width(16.dp))
         IconButton(dot = updateAvailable, modifier = m("update"), onClick = onUpdates) { color -> DownloadIcon(color) }
         Spacer(Modifier.width(8.dp))
-        IconButton(dot = false, modifier = m("settings"), onClick = {
-            val i = Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            try { context.startActivity(i) } catch (e: Exception) { logW(e) }
-        }) { color ->
+        IconButton(dot = false, modifier = m("settings"), onClick = onSettings) { color ->
             Image(Icons.Filled.Settings, contentDescription = "Einstellungen", colorFilter = ColorFilter.tint(color), modifier = Modifier.size(18.dp))
         }
     }

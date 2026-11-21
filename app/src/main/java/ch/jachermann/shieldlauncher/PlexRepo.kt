@@ -53,7 +53,13 @@ data class PlexItem(
 @Immutable
 data class PlexRow(val title: String, val items: List<PlexItem>, val landscape: Boolean, val resume: Boolean)
 
-data class PlexServer(val id: String, val name: String, val base: String, val token: String)
+/** kind: "lokal", "extern" oder "Relay" (wie der Server erreicht wird). */
+data class PlexServer(val id: String, val name: String, val base: String, val token: String, val kind: String = "")
+
+/** Eine Mediathek auf einem Server. id = "serverId:key" */
+data class LibrarySection(val serverId: String, val serverName: String, val key: String, val title: String, val type: String) {
+    val id: String get() = "$serverId:$key"
+}
 
 class PlexRepo(context: Context) {
 
@@ -71,6 +77,33 @@ class PlexRepo(context: Context) {
         }
 
     val userToken: String? get() = prefs.getString("token", null)
+
+    /** Abmelden: Token, Server und zwischengespeicherte Inhalte löschen. */
+    fun logout() {
+        prefs.edit().remove("token").remove("servers").remove("new_sections").apply()
+        filesDir.listFiles()?.filter { it.name.endsWith(".json") }?.forEach { it.delete() }
+    }
+
+    /**
+     * Mediatheken für die Reihen "Neu in Filme" und "Neu in Serien".
+     * null = Standard: alle Mediatheken mit "4K" im Namen.
+     */
+    var newSections: Set<String>?
+        get() = prefs.getStringSet("new_sections", null)?.toSet()
+        set(v) {
+            prefs.edit().apply { if (v == null) remove("new_sections") else putStringSet("new_sections", v) }.apply()
+        }
+
+    private fun isNewSection(sec: Section): Boolean {
+        val chosen = newSections ?: return sec.title.lowercase().contains("4k")
+        return "${sec.server.id}:${sec.key}" in chosen
+    }
+
+    /** Alle Film- und Serien-Mediatheken der Server. */
+    suspend fun librarySections(servers: List<PlexServer>): List<LibrarySection> = withContext(Dispatchers.IO) {
+        sections(servers).filter { it.type == "movie" || it.type == "show" }
+            .map { LibrarySection(it.server.id, it.server.name, it.key, it.title, it.type) }
+    }
 
     private fun headers(token: String? = null): Map<String, String> {
         val h = mutableMapOf(
@@ -159,7 +192,8 @@ class PlexRepo(context: Context) {
                     false
                 }
                 if (ok) {
-                    out.add(PlexServer(r.optString("clientIdentifier"), r.optString("name"), uri, serverToken))
+                    val kind = when (rank) { 0 -> "lokal"; 1 -> "extern"; else -> "Relay" }
+                    out.add(PlexServer(r.optString("clientIdentifier"), r.optString("name"), uri, serverToken, kind))
                     break
                 }
             }
@@ -329,8 +363,9 @@ class PlexRepo(context: Context) {
         unreachableServers = failed
         val movies4k = mutableListOf<PlexItem>()
         val shows4k = mutableListOf<PlexItem>()
-        for (sec in sections(servers)) {
-            if (!sec.title.lowercase().contains("4k")) continue
+        val allSections = sections(servers)
+        for (sec in allSections) {
+            if (!isNewSection(sec)) continue
             try {
                 when (sec.type) {
                     "movie" -> movies4k += list(sec.server, "/library/sections/${sec.key}/recentlyAdded")
@@ -342,8 +377,11 @@ class PlexRepo(context: Context) {
         }
         val rows = mutableListOf<PlexRow>()
         if (onDeck.isNotEmpty()) rows += PlexRow("Weiterschauen", onDeck, landscape = true, resume = true)
-        if (movies4k.isNotEmpty()) rows += PlexRow("Neu in Filme 4K", movies4k, landscape = true, resume = false)
-        if (shows4k.isNotEmpty()) rows += PlexRow("Neu in Serien 4K", shows4k, landscape = true, resume = false)
+        // "4K" nur im Titel, wenn alle gewählten Mediatheken 4K-Mediatheken sind
+        val chosen = allSections.filter { isNewSection(it) }
+        fun suffix(type: String) = chosen.filter { it.type == type }.let { l -> if (l.isNotEmpty() && l.all { it.title.lowercase().contains("4k") }) " 4K" else "" }
+        if (movies4k.isNotEmpty()) rows += PlexRow("Neu in Filme" + suffix("movie"), movies4k.sortedByDescending { it.addedAt }, landscape = true, resume = false)
+        if (shows4k.isNotEmpty()) rows += PlexRow("Neu in Serien" + suffix("show"), shows4k.sortedByDescending { it.addedAt }, landscape = true, resume = false)
         if (recent.isNotEmpty()) rows += PlexRow("Zuletzt hinzugefügt", recent, landscape = true, resume = false)
         val watch = loadWatchlist()
         if (watch.isNotEmpty()) rows += PlexRow("Watchlist", watch, landscape = true, resume = false)
@@ -441,7 +479,7 @@ class PlexRepo(context: Context) {
     fun saveServers(servers: List<PlexServer>) {
         val arr = JSONArray()
         servers.forEach {
-            arr.put(JSONObject().put("id", it.id).put("name", it.name).put("base", it.base).put("token", it.token))
+            arr.put(JSONObject().put("id", it.id).put("name", it.name).put("base", it.base).put("token", it.token).put("kind", it.kind))
         }
         prefs.edit().putString("servers", arr.toString()).apply()
     }
@@ -450,7 +488,7 @@ class PlexRepo(context: Context) {
         val arr = JSONArray(prefs.getString("servers", "[]"))
         (0 until arr.length()).map {
             val o = arr.getJSONObject(it)
-            PlexServer(o.getString("id"), o.getString("name"), o.getString("base"), o.getString("token"))
+            PlexServer(o.getString("id"), o.getString("name"), o.getString("base"), o.getString("token"), o.optString("kind"))
         }
     } catch (e: Exception) {
         emptyList()
