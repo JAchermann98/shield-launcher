@@ -99,6 +99,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
@@ -1577,6 +1578,14 @@ private fun YouTubeSearchScreen(
     }
 
     Box(Modifier.fillMaxSize()) {
+        // Ergebnisse unterhalb der Suchleiste, nach oben abgeschnitten, damit nichts die Leiste überdeckt
+        Box(Modifier.fillMaxSize().padding(top = 116.dp).clipToBounds()) {
+        Box(Modifier.fillMaxWidth().layout { m, c ->
+            val extra = 60.dp.roundToPx()
+            val h = c.maxHeight + extra
+            val p = m.measure(c.copy(minHeight = h, maxHeight = h))
+            layout(p.width, c.maxHeight) { p.place(0, -extra) }
+        }) {
         StartScreen(
             rows = results,
             status = status,
@@ -1590,6 +1599,8 @@ private fun YouTubeSearchScreen(
             onAutoFocused = {},
             gridMode = gridMode
         )
+        }
+        }
 
         if (results.isEmpty() && status.isNotEmpty()) {
             BasicText(status, modifier = Modifier.offset(x = 66.dp, y = 120.dp), style = TextStyle(color = TextSoft, fontSize = 14.sp))
