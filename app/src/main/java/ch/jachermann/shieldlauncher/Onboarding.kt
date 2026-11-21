@@ -162,7 +162,7 @@ fun OnboardingFlow(
 
         // Grosse Schrittnummer als ruhiges Gestaltungselement
         if (!onlyStep) {
-            Crossfade(step, tween(600), label = "num", modifier = Modifier.align(Alignment.BottomEnd)) { s ->
+            Crossfade(targetState = step, modifier = Modifier.align(Alignment.BottomEnd), animationSpec = tween(600), label = "num") { s ->
                 BasicText(
                     "0${s.ordinal + 1}",
                     modifier = Modifier.padding(end = 40.dp, bottom = 8.dp),
@@ -227,7 +227,7 @@ private fun BoxScope.SetupBackground(images: List<String>) {
         }
     }
     val url = images.getOrNull(index % maxOf(images.size, 1))
-    Crossfade(url, tween(1600), label = "bg") { u ->
+    Crossfade(targetState = url, animationSpec = tween(1600), label = "bg") { u ->
         if (u != null) {
             val zoom = remember { Animatable(1.0f) }
             LaunchedEffect(u) { zoom.animateTo(1.12f, tween(11000, easing = LinearEasing)) }
