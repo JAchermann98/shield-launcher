@@ -1,14 +1,11 @@
 package ch.jachermann.shieldlauncher
 
-import android.app.PendingIntent
-import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageInstaller
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
-import android.widget.Toast
+import androidx.core.content.FileProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -141,7 +138,7 @@ object Updater {
         }
         withContext(Dispatchers.IO) { File(context.cacheDir, "updates").listFiles()?.forEach { it.delete() } }
         val file = withContext(Dispatchers.IO) { download(url, File(File(context.cacheDir, "updates").apply { mkdirs() }, fileName), onProgress) }
-        withContext(Dispatchers.IO) { commitInstall(context, file) }
+        openInstaller(context, file)
         return true
     }
 
@@ -201,46 +198,16 @@ object Updater {
             readTimeout = 30000
         }
 
-    /** Übergibt die APK an den PackageInstaller; das Bestätigungsfenster öffnet InstallReceiver. */
-    private fun commitInstall(context: Context, apk: File) {
-        val installer = context.packageManager.packageInstaller
-        val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL)
-        params.setSize(apk.length())
-        val id = installer.createSession(params)
-        installer.openSession(id).use { session ->
-            apk.inputStream().use { input ->
-                session.openWrite("base.apk", 0, apk.length()).use { out ->
-                    input.copyTo(out)
-                    session.fsync(out)
-                }
-            }
-            val flags = PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else 0)
-            val pi = PendingIntent.getBroadcast(context, id, Intent(context, InstallReceiver::class.java), flags)
-            session.commit(pi.intentSender)
-        }
-        // Die Daten liegen jetzt in der Installer-Sitzung, die Datei wird nicht mehr gebraucht
-        apk.delete()
-    }
-}
-
-/** Empfängt den Status der Installation und öffnet das Bestätigungsfenster sofort. */
-class InstallReceiver : BroadcastReceiver() {
-    override fun onReceive(context: Context, intent: Intent) {
-        when (intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE)) {
-            PackageInstaller.STATUS_PENDING_USER_ACTION -> {
-                @Suppress("DEPRECATION")
-                val confirm = intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT) ?: return
-                confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                try { context.startActivity(confirm) } catch (e: Exception) { logW(e) }
-            }
-            PackageInstaller.STATUS_SUCCESS -> {
-                Toast.makeText(context, "Installation abgeschlossen", Toast.LENGTH_SHORT).show()
-            }
-            PackageInstaller.STATUS_FAILURE_ABORTED -> { }
-            else -> {
-                val msg = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE) ?: "unbekannter Fehler"
-                Toast.makeText(context, "Installation fehlgeschlagen: $msg", Toast.LENGTH_LONG).show()
-            }
-        }
+    /**
+     * Öffnet das normale Android-Installationsfenster. Dieser Weg wird von Play Protect
+     * als manuelle Installation behandelt (die Sitzungs-Installation wird bei unbekannten
+     * Entwicklern blockiert).
+     */
+    private fun openInstaller(context: Context, apk: File) {
+        val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", apk)
+        val i = Intent(Intent.ACTION_VIEW)
+        i.setDataAndType(uri, "application/vnd.android.package-archive")
+        i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        context.startActivity(i)
     }
 }
