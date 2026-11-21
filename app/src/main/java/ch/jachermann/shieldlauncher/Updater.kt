@@ -125,7 +125,7 @@ object Updater {
     }
 
     /**
-     * Lädt eine APK herunter und startet die Installation über den PackageInstaller.
+     * Lädt eine APK herunter und öffnet das Android-Installationsfenster.
      * onProgress bekommt 0..100 (oder -1, wenn die Grösse unbekannt ist).
      * true = Installationsfenster wird geöffnet, false = Berechtigung fehlt (Einstellungen wurden geöffnet).
      */
