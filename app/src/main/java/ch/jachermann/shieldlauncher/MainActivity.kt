@@ -125,7 +125,15 @@ fun LauncherApp(repo: PlexRepo, resumeCount: Int, homeCount: Int) {
         val current = setup
         if (current != null) {
             // Erneuter Durchlauf aus den Einstellungen lässt sich mit Zurück abbrechen
-            val cancel: (() -> Unit)? = if (rerun) ({ Setup.setDone(context, true); setup = null; onlyStep = false; rerun = false }) else null
+            val cancel: (() -> Unit)? = if (rerun) ({
+                // Nur abbrechen, wenn Plex noch angemeldet ist (man kann sich in der Einrichtung abmelden)
+                if (repo.userToken != null) {
+                    Setup.setDone(context, true)
+                    setup = null
+                    onlyStep = false
+                    rerun = false
+                }
+            }) else null
             OnboardingFlow(repo, current, onlyStep, cancel) {
                 Setup.setDone(context, true)
                 setup = null
