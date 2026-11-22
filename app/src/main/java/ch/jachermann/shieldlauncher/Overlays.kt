@@ -290,3 +290,74 @@ fun launchYouTube(context: Context) {
     pkgs += "com.google.android.youtube.tv"
     launchApp(context, pkgs)
 }
+
+// ---------------------------------------------------------------- Auswahl der Mediathek
+
+/** Aufklappliste unter dem Mediathek-Knopf. options: id (null = alle) zu Name. */
+@Composable
+fun LibraryDropdown(
+    options: List<Pair<String?, String>>,
+    current: String?,
+    anchor: androidx.compose.ui.geometry.Rect?,
+    onSelect: (String?) -> Unit,
+    onClose: () -> Unit
+) {
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val reqs = remember(options) { options.map { FocusRequester() } }
+    val appear = remember { androidx.compose.animation.core.Animatable(0f) }
+    LaunchedEffect(Unit) {
+        launch { appear.animateTo(1f, tween(220)) }
+        delay(60)
+        val i = options.indexOfFirst { it.first == current }.coerceAtLeast(0)
+        try { reqs[i].requestFocus() } catch (e: Exception) { }
+    }
+    val width = 260.dp
+    // Rechtsbündig unter dem Knopf, aber nie über den Bildschirmrand hinaus
+    val x = with(density) { anchor?.let { (it.right.toDp() - width).coerceAtLeast(16.dp) } ?: 600.dp }
+    val y = with(density) { anchor?.let { it.bottom.toDp() + 8.dp } ?: 64.dp }
+
+    Box(Modifier.fillMaxSize().background(Bg.copy(alpha = 0.35f * appear.value))) {
+        Column(
+            Modifier
+                .padding(start = x, top = y)
+                .width(width)
+                .graphicsLayer {
+                    alpha = appear.value
+                    translationY = (1f - appear.value) * -12f * density.density
+                    transformOrigin = androidx.compose.ui.graphics.TransformOrigin(1f, 0f)
+                    scaleX = 0.96f + 0.04f * appear.value
+                    scaleY = 0.96f + 0.04f * appear.value
+                }
+                .clip(RoundedCornerShape(14.dp))
+                .background(Color(0xF01A202A))
+                .border(1.dp, Color.White.copy(alpha = 0.10f), RoundedCornerShape(14.dp))
+                .padding(6.dp)
+                .trapFocus()
+        ) {
+            options.forEachIndexed { i, (id, name) ->
+                val src = remember { MutableInteractionSource() }
+                val focused by src.collectIsFocusedAsState()
+                val selected = id == current
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .focusRequester(reqs[i])
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(if (focused) TextMain else Color.Transparent)
+                        .clickable(interactionSource = src, indication = null) { onSelect(id) }
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    BasicText(
+                        name, modifier = Modifier.weight(1f), maxLines = 1,
+                        style = TextStyle(color = if (focused) Bg else TextMain, fontSize = 14.sp, fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal)
+                    )
+                    if (selected) BasicText("✓", style = TextStyle(color = if (focused) Bg else Color(0xFF7FB2FF), fontSize = 14.sp, fontWeight = FontWeight.Bold))
+                }
+                if (i == 0 && options.size > 1) {
+                    Box(Modifier.padding(horizontal = 10.dp, vertical = 4.dp).fillMaxWidth().height(1.dp).background(Color.White.copy(alpha = 0.08f)))
+                }
+            }
+        }
+    }
+}

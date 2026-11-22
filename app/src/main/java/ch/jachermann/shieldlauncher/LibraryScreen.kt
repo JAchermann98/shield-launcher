@@ -252,7 +252,7 @@ fun LibraryScreen(
                                             val fr = remember(idx) { FocusRequester() }
                                             DisposableEffect(idx) {
                                                 posterReqs[idx] = fr
-                                                onDispose { posterReqs.remove(idx) }
+                                                onDispose { if (posterReqs[idx] === fr) posterReqs.remove(idx) }
                                             }
                                             PosterCard(
                                                 item = item,

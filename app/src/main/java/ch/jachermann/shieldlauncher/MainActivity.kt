@@ -192,6 +192,8 @@ fun HomeRoot(
     var showApps by remember { mutableStateOf(false) }
     var showUpdates by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
+    var showLibMenu by remember { mutableStateOf(false) }
+    var libBounds by remember { mutableStateOf<androidx.compose.ui.geometry.Rect?>(null) }
     val bridge = remember { FocusBridge() }
     val topReq = remember { listOf("plex", "yt", "apps", "start", "filme", "serien", "ytstart", "ytsearch", "lib", "view", "update", "settings").associateWith { FocusRequester() } }
     // Ansicht für Filme/Serien: Bildansicht (false) oder Rasteransicht (true), getrennt gemerkt
@@ -230,6 +232,7 @@ fun HomeRoot(
             showApps = false
             showUpdates = false
             showSettings = false
+            showLibMenu = false
             val home = if (tab.isYouTube) Tab.YOUTUBE else Tab.START
             if (home == Tab.START) autoFocusStart = true
             if (tab != home) {
@@ -246,6 +249,10 @@ fun HomeRoot(
             showApps -> showApps = false
             showUpdates -> showUpdates = false
             showSettings -> showSettings = false
+            showLibMenu -> {
+                showLibMenu = false
+                try { topReq["lib"]?.requestFocus() } catch (e: Exception) { }
+            }
             tab != Tab.START -> tab = Tab.START
         }
     }
@@ -444,17 +451,8 @@ fun HomeRoot(
                     }
                     else -> null
                 },
-                onLib = {
-                    // Wechselt der Reihe nach: Alle → Mediathek 1 → Mediathek 2 → … → Alle
-                    val type = if (tab == Tab.FILME) "movie" else "show"
-                    val ids = listOf<String?>(null) + libSections.filter { it.type == type }.map { it.id }
-                    val cur = if (tab == Tab.FILME) libMovie else libShow
-                    val next = ids[(ids.indexOf(cur).coerceAtLeast(0) + 1) % ids.size]
-                    if (tab == Tab.FILME) libMovie = next else libShow = next
-                    uiPrefs.edit().putString(if (tab == Tab.FILME) "lib_movie" else "lib_show", next).apply()
-                    libScrolled = false
-                    tabFirst.remove(tab)
-                },
+                onLib = { showLibMenu = true },
+                onLibBounds = { libBounds = it },
                 onSettings = { showSettings = true }
             )
         }
@@ -464,6 +462,31 @@ fun HomeRoot(
         }
         if (showUpdates) {
             UpdatesOverlay(onClose = { showUpdates = false })
+        }
+        if (showLibMenu && (tab == Tab.FILME || tab == Tab.SERIEN)) {
+            val type = if (tab == Tab.FILME) "movie" else "show"
+            val cur = if (tab == Tab.FILME) libMovie else libShow
+            val options = listOf<Pair<String?, String>>(null to (if (tab == Tab.FILME) "Alle Filme" else "Alle Serien")) +
+                libSections.filter { it.type == type }.map { it.id to it.title }
+            LibraryDropdown(
+                options = options,
+                current = cur,
+                anchor = libBounds,
+                onSelect = { next ->
+                    showLibMenu = false
+                    if (next != cur) {
+                        if (tab == Tab.FILME) libMovie = next else libShow = next
+                        uiPrefs.edit().putString(if (tab == Tab.FILME) "lib_movie" else "lib_show", next).apply()
+                        libScrolled = false
+                        tabFirst.remove(tab)
+                    }
+                    scope.launch { delay(60); try { topReq["lib"]?.requestFocus() } catch (e: Exception) { } }
+                },
+                onClose = {
+                    showLibMenu = false
+                    scope.launch { delay(60); try { topReq["lib"]?.requestFocus() } catch (e: Exception) { } }
+                }
+            )
         }
         if (showSettings) {
             SettingsOverlay(

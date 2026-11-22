@@ -38,6 +38,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -66,7 +68,8 @@ fun TopBar(
     onUpdates: () -> Unit,
     onSettings: () -> Unit,
     libLabel: String? = null,
-    onLib: () -> Unit = {}
+    onLib: () -> Unit = {},
+    onLibBounds: (androidx.compose.ui.geometry.Rect) -> Unit = {}
 ) {
     fun m(k: String): Modifier = Modifier.focusRequester(reqs.getValue(k)).onFocusChanged { if (it.isFocused) onFocused(k) }
     val context = LocalContext.current
@@ -121,7 +124,10 @@ fun TopBar(
         // Auswahl der Mediathek (nur auf Filme/Serien und nur bei mehreren Mediatheken)
         if (libLabel != null) {
             Spacer(Modifier.width(10.dp))
-            PillButton("▾  $libLabel", m("lib")) { onLib() }
+            PillButton(
+                "$libLabel  ▾",
+                m("lib").onGloballyPositioned { onLibBounds(it.boundsInRoot()) }
+            ) { onLib() }
         }
         // Umschalter Bild-/Rasteransicht (für jede Seite getrennt gemerkt)
         Spacer(Modifier.width(8.dp))

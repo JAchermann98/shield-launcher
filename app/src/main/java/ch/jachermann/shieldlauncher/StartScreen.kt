@@ -317,7 +317,9 @@ fun ContentRow(
                     val fr = remember { FocusRequester() }
                     DisposableEffect(rowIndex, index) {
                         requesters[rowIndex to index] = fr
-                        onDispose { requesters.remove(rowIndex to index) }
+                        // Nur den eigenen Eintrag entfernen: Wenn sich Zeilen verschieben, hat eine
+                        // andere Zeile diesen Platz evtl. schon übernommen
+                        onDispose { if (requesters[rowIndex to index] === fr) requesters.remove(rowIndex to index) }
                     }
                     LandscapeCard(
                         item = item,
