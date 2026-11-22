@@ -8,6 +8,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-latest
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -49,6 +53,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release delete latest --yes --cleanup-tag || true
+          sleep 5
           gh release create latest shield-launcher.apk \
+            --target "${{ github.sha }}" \
             --title "Neueste Version (Build ${{ github.run_number }})" \
             --notes "Automatisch gebaut aus ${{ github.sha }}."
+          # Sicherstellen, dass der Release veröffentlicht ist (ein Entwurf ist für die Geräte unsichtbar)
+          gh release edit latest --draft=false
+          sleep 3
+          gh api "repos/${{ github.repository }}/releases/tags/latest" --jq '.name + " draft=" + (.draft|tostring)'
