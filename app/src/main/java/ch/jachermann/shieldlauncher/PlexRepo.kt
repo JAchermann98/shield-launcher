@@ -365,7 +365,13 @@ class PlexRepo(context: Context) {
         val newRows = mutableListOf<PlexRow>()
         val chosen = sections(servers).filter { isNewSection(it) && (it.type == "movie" || it.type == "show") }
         val sameName = chosen.groupBy { it.title }.filterValues { it.size > 1 }.keys
-        for (sec in chosen.sortedBy { if (it.type == "movie") 0 else 1 }) {
+        // Reihenfolge: Filme vor Serien, innerhalb davon 4K-Mediatheken zuerst
+        val ordered = chosen.sortedWith(compareBy(
+            { if (it.type == "movie") 0 else 1 },
+            { if (it.title.lowercase().contains("4k")) 0 else 1 },
+            { it.title.lowercase() }
+        ))
+        for (sec in ordered) {
             try {
                 val is4k = sec.title.lowercase().contains("4k")
                 val items = list(sec.server, "/library/sections/${sec.key}/recentlyAdded")
