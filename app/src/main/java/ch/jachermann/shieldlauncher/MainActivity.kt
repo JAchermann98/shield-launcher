@@ -203,7 +203,12 @@ fun HomeRoot(
     var libMovie by remember { mutableStateOf(uiPrefs.getString("lib_movie", null)) }
     var libShow by remember { mutableStateOf(uiPrefs.getString("lib_show", null)) }
     LaunchedEffect(servers) {
-        if (servers.isNotEmpty()) libSections = try { repo.librarySections(servers) } catch (e: Exception) { logW(e); emptyList() }
+        if (servers.isEmpty()) return@LaunchedEffect
+        val list = try { repo.librarySections(servers) } catch (e: Exception) { logW(e); null } ?: return@LaunchedEffect
+        libSections = list
+        // Gespeicherte Mediathek gibt es nicht mehr (gelöscht/umbenannt): zurück auf "Alle"
+        if (libMovie != null && list.none { it.id == libMovie }) { libMovie = null; uiPrefs.edit().remove("lib_movie").apply() }
+        if (libShow != null && list.none { it.id == libShow }) { libShow = null; uiPrefs.edit().remove("lib_show").apply() }
     }
     var gridMovies by remember { mutableStateOf(uiPrefs.getBoolean("grid_movie", false)) }
     var gridShows by remember { mutableStateOf(uiPrefs.getBoolean("grid_show", false)) }
@@ -447,7 +452,8 @@ fun HomeRoot(
                         val type = if (tab == Tab.FILME) "movie" else "show"
                         val list = libSections.filter { it.type == type }
                         val cur = if (tab == Tab.FILME) libMovie else libShow
-                        if (list.size > 1) list.firstOrNull { it.id == cur }?.title ?: "Alle Mediatheken" else null
+                        val allLabel = if (tab == Tab.FILME) "Alle Filme" else "Alle Serien"
+                        if (list.size > 1 || cur != null) list.firstOrNull { it.id == cur }?.title ?: allLabel else null
                     }
                     else -> null
                 },
