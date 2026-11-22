@@ -361,27 +361,24 @@ class PlexRepo(context: Context) {
             }
         }
         unreachableServers = failed
-        val movies4k = mutableListOf<PlexItem>()
-        val shows4k = mutableListOf<PlexItem>()
-        val allSections = sections(servers)
-        for (sec in allSections) {
-            if (!isNewSection(sec)) continue
+        // Eine eigene Reihe pro gewählter Mediathek, benannt nach der Mediathek (z. B. "Neu in Filme 4K")
+        val newRows = mutableListOf<PlexRow>()
+        val chosen = sections(servers).filter { isNewSection(it) && (it.type == "movie" || it.type == "show") }
+        val sameName = chosen.groupBy { it.title }.filterValues { it.size > 1 }.keys
+        for (sec in chosen.sortedBy { if (it.type == "movie") 0 else 1 }) {
             try {
-                when (sec.type) {
-                    "movie" -> movies4k += list(sec.server, "/library/sections/${sec.key}/recentlyAdded")
-                    "show" -> shows4k += list(sec.server, "/library/sections/${sec.key}/recentlyAdded")
-                }
+                val is4k = sec.title.lowercase().contains("4k")
+                val items = list(sec.server, "/library/sections/${sec.key}/recentlyAdded")
+                    .map { if (is4k && it.resolution.isEmpty()) it.copy(resolution = "4K") else it }
+                val name = sec.title + if (sec.title in sameName) " (${sec.server.name})" else ""
+                if (items.isNotEmpty()) newRows += PlexRow("Neu in $name", items, landscape = true, resume = false)
             } catch (e: Exception) {
                 logW(e)
             }
         }
         val rows = mutableListOf<PlexRow>()
         if (onDeck.isNotEmpty()) rows += PlexRow("Weiterschauen", onDeck, landscape = true, resume = true)
-        // "4K" nur im Titel, wenn alle gewählten Mediatheken 4K-Mediatheken sind
-        val chosen = allSections.filter { isNewSection(it) }
-        fun suffix(type: String) = chosen.filter { it.type == type }.let { l -> if (l.isNotEmpty() && l.all { it.title.lowercase().contains("4k") }) " 4K" else "" }
-        if (movies4k.isNotEmpty()) rows += PlexRow("Neu in Filme" + suffix("movie"), movies4k.sortedByDescending { it.addedAt }, landscape = true, resume = false)
-        if (shows4k.isNotEmpty()) rows += PlexRow("Neu in Serien" + suffix("show"), shows4k.sortedByDescending { it.addedAt }, landscape = true, resume = false)
+        rows += newRows
         if (recent.isNotEmpty()) rows += PlexRow("Zuletzt hinzugefügt", recent, landscape = true, resume = false)
         val watch = loadWatchlist()
         if (watch.isNotEmpty()) rows += PlexRow("Watchlist", watch, landscape = true, resume = false)
@@ -408,6 +405,16 @@ class PlexRepo(context: Context) {
         val newest = dedupe(recent.sortedByDescending { it.addedAt }).take(20)
         val sorted = dedupe(all).sortedBy { it.titleSort.lowercase(Locale.GERMANY) }
         Pair(newest, sorted)
+    }
+
+    /** Nur eine Mediathek laden (für die Auswahl auf den Seiten Filme und Serien). id = "serverId:key" */
+    suspend fun loadSection(servers: List<PlexServer>, id: String): Pair<List<PlexItem>, List<PlexItem>> = withContext(Dispatchers.IO) {
+        val sec = sections(servers).firstOrNull { "${it.server.id}:${it.key}" == id } ?: return@withContext Pair(emptyList(), emptyList())
+        val is4k = sec.title.lowercase().contains("4k")
+        fun hint(i: PlexItem) = if (is4k && i.resolution.isEmpty()) i.copy(resolution = "4K") else i
+        val all = list(sec.server, "/library/sections/${sec.key}/all?sort=titleSort", size = 10000).map { hint(it) }
+        val recent = list(sec.server, "/library/sections/${sec.key}/recentlyAdded", size = 20).map { hint(it) }
+        Pair(recent, all.sortedBy { it.titleSort.lowercase(Locale.GERMANY) })
     }
 
     /** Qualität und Ton einer Serie/Staffel anhand der ersten Folge. */

@@ -84,8 +84,11 @@ fun LibraryScreen(
     bridge: FocusBridge,
     active: Boolean,
     gridMode: Boolean,
+    sectionId: String? = null,
     onScrolled: (Boolean) -> Unit
 ) {
+    // Eigener Zwischenspeicher pro gewählter Mediathek
+    val cacheKey = if (sectionId == null) type else type + "_" + sectionId.replace(Regex("[^A-Za-z0-9]"), "_")
     val scope = rememberCoroutineScope()
     val windowTop by animateDpAsState(
         (if (gridMode) LIB_WINDOW_TOP_GRID else LIB_WINDOW_TOP_IMAGE).dp,
@@ -93,7 +96,7 @@ fun LibraryScreen(
         label = "windowTop"
     )
     val heroAlpha by animateFloatAsState(if (gridMode) 0f else 1f, tween(300), label = "heroAlpha")
-    val cached = remember(type) { repo.loadLibraryCache(type) }
+    val cached = remember(type) { repo.loadLibraryCache(cacheKey) }
     var newest by remember(type) { mutableStateOf(cached.first) }
     var all by remember(type) { mutableStateOf(cached.second) }
     var loading by remember(type) { mutableStateOf(all.isEmpty()) }
@@ -101,11 +104,11 @@ fun LibraryScreen(
     LaunchedEffect(type, servers) {
         if (servers.isEmpty()) return@LaunchedEffect
         try {
-            val (n, a) = repo.loadLibrary(servers, type)
+            val (n, a) = if (sectionId == null) repo.loadLibrary(servers, type) else repo.loadSection(servers, sectionId)
             if (a.isNotEmpty()) {
                 newest = n
                 all = a
-                withContext(Dispatchers.IO) { repo.saveLibraryCache(type, n, a) }
+                withContext(Dispatchers.IO) { repo.saveLibraryCache(cacheKey, n, a) }
             }
         } catch (e: Exception) {
             logW(e)

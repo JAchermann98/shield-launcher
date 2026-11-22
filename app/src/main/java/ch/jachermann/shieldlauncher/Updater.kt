@@ -57,9 +57,31 @@ object Updater {
     private const val SMARTTUBE_API = "https://api.github.com/repos/yuliskov/SmartTube/releases/tags/latest"
     private const val SMARTTUBE_APK = "https://github.com/yuliskov/SmartTube/releases/download/latest/smarttube_stable.apk"
 
-    data class SmartTubeStatus(val installedPkg: String?, val installedAt: Long, val releaseAt: Long, val url: String) {
+    data class SmartTubeStatus(
+        val installedPkg: String?,
+        val installedAt: Long,
+        val releaseAt: Long,
+        val url: String,
+        /** Aus einem anderen Store (z. B. F-Droid) installiert: anders signiert, Update von GitHub nicht möglich. */
+        val otherSource: String? = null
+    ) {
         /** Neuere Version auf GitHub als die installierte (mit einer Stunde Spielraum). */
         val updateAvailable: Boolean get() = installedPkg != null && releaseAt > 0 && releaseAt > installedAt + 3_600_000
+    }
+
+    /** Name des Stores, falls die App aus F-Droid o. ä. stammt (sonst null). */
+    fun installSource(context: Context, pkg: String): String? {
+        val installer = try {
+            if (Build.VERSION.SDK_INT >= 30) context.packageManager.getInstallSourceInfo(pkg).installingPackageName
+            else @Suppress("DEPRECATION") context.packageManager.getInstallerPackageName(pkg)
+        } catch (e: Exception) { null } ?: return null
+        return when {
+            installer.contains("fdroid", true) -> "F-Droid"
+            installer.contains("droidify", true) || installer.contains("looker", true) -> "Droid-ify"
+            installer.contains("neo", true) && installer.contains("store", true) -> "Neo Store"
+            installer.contains("aurora", true) -> "Aurora Store"
+            else -> null
+        }
     }
 
     fun findSmartTube(context: Context): String? {
@@ -121,7 +143,7 @@ object Updater {
                 logW(e)
             }
         }
-        SmartTubeStatus(pkg, installedAt, releaseAt, url)
+        SmartTubeStatus(pkg, installedAt, releaseAt, url, pkg?.let { installSource(context, it) })
     }
 
     /**

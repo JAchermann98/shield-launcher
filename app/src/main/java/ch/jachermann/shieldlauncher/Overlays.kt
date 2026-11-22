@@ -5,6 +5,7 @@ package ch.jachermann.shieldlauncher
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ResolveInfo
+import android.net.Uri
 import android.widget.Toast
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
@@ -85,6 +86,7 @@ fun UpdatesOverlay(onClose: () -> Unit) {
         stText = when {
             s == null -> "Konnte nicht geprüft werden"
             s.installedPkg == null -> "Nicht installiert"
+            s.otherSource != null -> "Aus ${s.otherSource} installiert. Für Updates hier: deinstallieren und neu installieren"
             s.updateAvailable -> "Neue Version verfügbar (vom ${df.format(Date(s.releaseAt))})"
             else -> "Aktuell (installiert am ${df.format(Date(s.installedAt))})"
         }
@@ -136,11 +138,24 @@ fun UpdatesOverlay(onClose: () -> Unit) {
             val stAction = when {
                 s == null -> "Erneut prüfen"
                 s.installedPkg == null -> "Installieren"
+                s.otherSource != null -> "Deinstallieren"
                 s.updateAvailable -> "Aktualisieren"
                 else -> "Erneut prüfen"
             }
             UpdateRow("SmartTube (YouTube ohne Werbung)", stText, stAction, Modifier) {
-                if (s == null || (s.installedPkg != null && !s.updateAvailable)) {
+                if (s != null && s.otherSource != null && s.installedPkg != null) {
+                    // Andere Signatur: erst deinstallieren, danach erkennt die Prüfung "Nicht installiert"
+                    val pkg = s.installedPkg
+                    try {
+                        context.startActivity(Intent(Intent.ACTION_DELETE, Uri.parse("package:$pkg")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                    } catch (e: Exception) { logW(e) }
+                    scope.launch {
+                        repeat(60) {
+                            delay(2000)
+                            if (Updater.findSmartTube(context) == null) { checkCount++; return@launch }
+                        }
+                    }
+                } else if (s == null || (s.installedPkg != null && !s.updateAvailable)) {
                     if (!busy) checkCount++
                 } else {
                     val reset = stText
@@ -184,7 +199,7 @@ fun AllAppsOverlay(onClose: () -> Unit) {
         try { first.requestFocus() } catch (e: Exception) { }
     }
     Box(Modifier.fillMaxSize().background(Bg.copy(alpha = 0.96f)).padding(48.dp)) {
-        Column {
+        Column(Modifier.trapFocus()) {
             BasicText("Alle Apps", style = TextStyle(color = TextMain, fontSize = 24.sp, fontWeight = FontWeight.Bold))
             Spacer(Modifier.height(20.dp))
             LazyVerticalGrid(

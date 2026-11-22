@@ -64,7 +64,9 @@ fun TopBar(
     gridMode: Boolean,
     onToggleView: () -> Unit,
     onUpdates: () -> Unit,
-    onSettings: () -> Unit
+    onSettings: () -> Unit,
+    libLabel: String? = null,
+    onLib: () -> Unit = {}
 ) {
     fun m(k: String): Modifier = Modifier.focusRequester(reqs.getValue(k)).onFocusChanged { if (it.isFocused) onFocused(k) }
     val context = LocalContext.current
@@ -116,6 +118,11 @@ fun TopBar(
         if (!tab.isYouTube) TabButton("Filme", tab == Tab.FILME, m("filme")) { onTab(Tab.FILME) }
         Spacer(Modifier.width(4.dp))
         if (!tab.isYouTube) TabButton("Serien", tab == Tab.SERIEN, m("serien")) { onTab(Tab.SERIEN) }
+        // Auswahl der Mediathek (nur auf Filme/Serien und nur bei mehreren Mediatheken)
+        if (libLabel != null) {
+            Spacer(Modifier.width(10.dp))
+            PillButton("▾  $libLabel", m("lib")) { onLib() }
+        }
         // Umschalter Bild-/Rasteransicht (für jede Seite getrennt gemerkt)
         Spacer(Modifier.width(8.dp))
         IconButton(dot = false, modifier = m("view"), onClick = onToggleView) { color ->

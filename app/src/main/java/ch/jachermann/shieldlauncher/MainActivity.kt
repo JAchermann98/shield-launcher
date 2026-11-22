@@ -193,9 +193,16 @@ fun HomeRoot(
     var showUpdates by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
     val bridge = remember { FocusBridge() }
-    val topReq = remember { listOf("plex", "yt", "apps", "start", "filme", "serien", "ytstart", "ytsearch", "view", "update", "settings").associateWith { FocusRequester() } }
+    val topReq = remember { listOf("plex", "yt", "apps", "start", "filme", "serien", "ytstart", "ytsearch", "lib", "view", "update", "settings").associateWith { FocusRequester() } }
     // Ansicht für Filme/Serien: Bildansicht (false) oder Rasteransicht (true), getrennt gemerkt
     val uiPrefs = remember { context.getSharedPreferences("launcher_ui", Context.MODE_PRIVATE) }
+    // Mediatheken für die Auswahl auf den Seiten Filme und Serien (null = alle)
+    var libSections by remember { mutableStateOf<List<LibrarySection>>(emptyList()) }
+    var libMovie by remember { mutableStateOf(uiPrefs.getString("lib_movie", null)) }
+    var libShow by remember { mutableStateOf(uiPrefs.getString("lib_show", null)) }
+    LaunchedEffect(servers) {
+        if (servers.isNotEmpty()) libSections = try { repo.librarySections(servers) } catch (e: Exception) { logW(e); emptyList() }
+    }
     var gridMovies by remember { mutableStateOf(uiPrefs.getBoolean("grid_movie", false)) }
     var gridShows by remember { mutableStateOf(uiPrefs.getBoolean("grid_show", false)) }
     var gridStart by remember { mutableStateOf(uiPrefs.getBoolean("grid_start", false)) }
@@ -382,8 +389,14 @@ fun HomeRoot(
                     onAutoFocused = { autoFocusStart = false },
                     gridMode = gridStart
                 )
-                Tab.FILME -> LibraryScreen(repo, servers, "movie", "Alle Filme", focusState, onFocusItem, openItem, bridge, active, gridMovies) { libScrolled = it }
-                Tab.SERIEN -> LibraryScreen(repo, servers, "show", "Alle Serien", focusState, onFocusItem, openItem, bridge, active, gridShows) { libScrolled = it }
+                Tab.FILME -> key(libMovie) {
+                    val title = libSections.firstOrNull { it.id == libMovie }?.title ?: "Alle Filme"
+                    LibraryScreen(repo, servers, "movie", title, focusState, onFocusItem, openItem, bridge, active, gridMovies, libMovie) { libScrolled = it }
+                }
+                Tab.SERIEN -> key(libShow) {
+                    val title = libSections.firstOrNull { it.id == libShow }?.title ?: "Alle Serien"
+                    LibraryScreen(repo, servers, "show", title, focusState, onFocusItem, openItem, bridge, active, gridShows, libShow) { libScrolled = it }
+                }
                 Tab.YOUTUBE -> YouTubeScreen(
                     yt = ytRepo,
                     repo = repo,
@@ -422,6 +435,26 @@ fun HomeRoot(
                 gridMode = gridMode,
                 onToggleView = toggleView,
                 onUpdates = { showUpdates = true },
+                libLabel = when (tab) {
+                    Tab.FILME, Tab.SERIEN -> {
+                        val type = if (tab == Tab.FILME) "movie" else "show"
+                        val list = libSections.filter { it.type == type }
+                        val cur = if (tab == Tab.FILME) libMovie else libShow
+                        if (list.size > 1) list.firstOrNull { it.id == cur }?.title ?: "Alle Mediatheken" else null
+                    }
+                    else -> null
+                },
+                onLib = {
+                    // Wechselt der Reihe nach: Alle → Mediathek 1 → Mediathek 2 → … → Alle
+                    val type = if (tab == Tab.FILME) "movie" else "show"
+                    val ids = listOf<String?>(null) + libSections.filter { it.type == type }.map { it.id }
+                    val cur = if (tab == Tab.FILME) libMovie else libShow
+                    val next = ids[(ids.indexOf(cur).coerceAtLeast(0) + 1) % ids.size]
+                    if (tab == Tab.FILME) libMovie = next else libShow = next
+                    uiPrefs.edit().putString(if (tab == Tab.FILME) "lib_movie" else "lib_show", next).apply()
+                    libScrolled = false
+                    tabFirst.remove(tab)
+                },
                 onSettings = { showSettings = true }
             )
         }
